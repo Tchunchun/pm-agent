@@ -1,0 +1,31 @@
+
+
+Topic: Deniel Intelligence Model Requirement 
+
+Objective: Customer has shared the business requirement for the Deniel Intelligence, and more specifically, the models that they need help with. 
+
+Here is the meeting notes from SME: 
+
+"the specific area he called out for Microsoft’s help is:
+Denial prediction when there is no direct payer connection.
+
+More precisely, he said:
+
+For correct coding, Optum can rely on an existing UHC Precheck API, so prediction isn’t needed there.
+The gap is when Optum does not have a direct payer connection.
+In those cases, Optum wants to use historical claims data to predict whether a claim will be denied.
+Fintan explicitly noted that this is where Microsoft can really help move things along, i.e., with advanced analytics / modeling on historical data to enable denial prediction.
+So the MSFT value-add he highlighted is AI/ML-driven denial prediction based on historical data, especially for payers without real-time APIs.”
+
+
+
+So, I’d like to discuss the requirement and define the model requirements. 
+
+
+Output: 
+- draft model requirement
+- follow up questions with customer. 
+
+
+
+Supporting materials: attached. 

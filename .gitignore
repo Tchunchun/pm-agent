@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# Environment / secrets
+.env
+*.env
+
+# Runtime data (JSON stores — user-specific, not code)
+agent-claude/data/
+
+# Backup files
+*.bak
+*.bak2
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Uploaded files
+agent-claude/inbox/
+agent-claude/output/
+
+# Claude config
+.claude/
