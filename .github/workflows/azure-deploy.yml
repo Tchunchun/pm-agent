@@ -46,10 +46,13 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -r agent-claude/requirements.txt
-
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r agent-claude/requirements.txt
+          
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
           app-name: ${{ env.APP_NAME }}
           package: .
+          startup-command: bash startup.sh

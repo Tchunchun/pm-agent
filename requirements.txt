@@ -1,0 +1,2 @@
+# Root-level proxy — Oryx build system looks for requirements.txt at the root
+-r agent-claude/requirements.txt

@@ -4,15 +4,12 @@
 
 PORT="${PORT:-8000}"
 
-cd /home/site/wwwroot
-
-# Install dependencies (belt-and-suspenders — also done by Oryx build)
-pip install -r agent-claude/requirements.txt --quiet
-
-# Create persistent data directory on Azure's /home mount
-# /home is backed by Azure Storage and survives restarts + redeployments
+# Create persistent data directories on Azure's /home mount
 mkdir -p /home/pm_agent_data
 mkdir -p /home/pm_agent_inbox
+
+# Install dependencies (Oryx may have already done this, but belt-and-suspenders)
+pip install -r agent-claude/requirements.txt --quiet 2>/dev/null || true
 
 python -m streamlit run agent-claude/app.py \
     --server.port "$PORT" \
