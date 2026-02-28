@@ -23,7 +23,7 @@ from typing import Optional
 
 from openai import OpenAI  # kept for type hints only
 
-from config import MODEL, OPENAI_API_KEY, make_openai_client
+from config import MODEL, make_openai_client
 from storage import StorageManager
 from agents.custom_agent_runner import CustomAgentRunner
 from agents.facilitator_agent import FacilitatorAgent

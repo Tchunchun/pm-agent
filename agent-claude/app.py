@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import streamlit as st
 from datetime import date, datetime, timezone
 
-from config import APP_TITLE, APP_ICON, OPENAI_API_KEY, INBOX_DIR
+from config import APP_TITLE, APP_ICON, INBOX_DIR, has_valid_credentials
 from models.workroom import WorkroomSession, CustomAgent, OUTPUT_TYPE_META
 from storage import StorageManager
 from agents import Orchestrator
@@ -275,9 +275,9 @@ with st.sidebar:
     # Preload workrooms for sidebar
     _sb_wrs = storage.list_workrooms(include_archived=False)
 
-    # API key check
-    if not OPENAI_API_KEY:
-        st.error("OPENAI_API_KEY not set.\nSet it in your environment or .env file.")
+    # Credential check
+    if not has_valid_credentials():
+        st.error("Azure OpenAI credentials not set.\nSet AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_KEY in your environment or .env file.")
         st.stop()
 
     # ============================================================ #

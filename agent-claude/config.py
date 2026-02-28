@@ -27,20 +27,19 @@ INBOX_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 # ------------------------------------------------------------------ #
-# API credentials                                                      #
+# API credentials  (Azure OpenAI is the default path)                  #
 # ------------------------------------------------------------------ #
 
-# Shared API key — used for both standard OpenAI and Azure OpenAI
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-
-# Azure OpenAI — set these to switch from standard OpenAI to Azure
-AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
+# Azure OpenAI (primary)
+AZURE_OPENAI_ENDPOINT    = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
+AZURE_OPENAI_KEY         = os.environ.get("AZURE_OPENAI_KEY", "")
 AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
 
+# Fallback: standard OpenAI API key (used only when Azure endpoint is NOT set)
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+
 # Model / deployment name
-# • Standard OpenAI: model name, e.g. "gpt-5-mini"
-# • Azure OpenAI:    your deployment name (set via AZURE_OPENAI_DEPLOYMENT)
-MODEL = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-5-mini")
+MODEL = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4.1-mini")
 
 APP_TITLE = "PM Agent"
 APP_ICON = "🧭"
@@ -49,18 +48,28 @@ APP_ICON = "🧭"
 MIN_REQUESTS_FOR_ANALYSIS = 10
 
 
+def has_valid_credentials() -> bool:
+    """Return True if enough credentials are set to create an LLM client."""
+    if AZURE_OPENAI_ENDPOINT and (AZURE_OPENAI_KEY or OPENAI_API_KEY):
+        return True
+    if OPENAI_API_KEY:          # fallback to standard OpenAI
+        return True
+    return False
+
+
 def make_openai_client():
     """
-    Return an AzureOpenAI client if AZURE_OPENAI_ENDPOINT is configured,
-    otherwise a standard OpenAI client.
+    Return an AzureOpenAI client (default) or a standard OpenAI client.
 
-    All agents call this instead of constructing OpenAI() directly,
-    so switching between standard and Azure is a one-line .env change.
+    Azure OpenAI is the primary path.  Set AZURE_OPENAI_ENDPOINT and
+    AZURE_OPENAI_KEY (or OPENAI_API_KEY) in your environment / .env.
+    If AZURE_OPENAI_ENDPOINT is *not* set, falls back to standard OpenAI.
     """
     if AZURE_OPENAI_ENDPOINT:
         from openai import AzureOpenAI
+        _key = AZURE_OPENAI_KEY or OPENAI_API_KEY
         return AzureOpenAI(
-            api_key=OPENAI_API_KEY,
+            api_key=_key,
             azure_endpoint=AZURE_OPENAI_ENDPOINT,
             api_version=AZURE_OPENAI_API_VERSION,
             max_retries=5,
