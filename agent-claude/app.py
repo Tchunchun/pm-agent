@@ -1294,10 +1294,11 @@ if page == "chat":
                                 "multi_response": result.get("multi_response"),
                             })
                 except Exception as _chat_err:
-                    import traceback
+                    import logging
+                    logging.getLogger(__name__).exception("Workroom chat error: %s", _chat_err)
                     wmsgs.append({
                         "role": "assistant",
-                        "content": f"⚠️ **Error:** {_chat_err}\n\n```\n{traceback.format_exc()[-500:]}\n```",
+                        "content": "Something went wrong processing your message. Please try sending it again.",
                         "agent": "[System]",
                     })
 

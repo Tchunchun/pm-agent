@@ -97,8 +97,10 @@ class WriterAgent:
             system += f"\n\n{doc_context}"
         if concise:
             system += (
-                "\n\nIMPORTANT: You are in a live workroom discussion. "
-                "Keep drafts short and focused (3-5 sentences, hard max 6). "
+                "\n\nCRITICAL CONSTRAINT — You are in a live workroom discussion. "
+                "You MUST respond in 3-5 sentences (absolute hard max 6 sentences). "
+                "Do NOT use headers, bullet lists, numbered lists, or multi-section formatting. "
+                "Write in flowing prose paragraphs only. Keep drafts short and focused. "
                 "Use specifics from the document context above — don't ask questions the doc already answers. "
                 "You'll get follow-up turns — provide a tight first draft, not a comprehensive one. "
                 "End with → the single most important thing to get right in this communication."
@@ -126,7 +128,7 @@ class WriterAgent:
         try:
             response = self.client.chat.completions.create(
                 model=MODEL,
-                max_tokens=1200 if concise else 2000,
+                max_tokens=500 if concise else 2000,
                 messages=messages,
             )
             return response.choices[0].message.content.strip()

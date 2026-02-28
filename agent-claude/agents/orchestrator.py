@@ -37,14 +37,15 @@ from models.workroom import CustomAgent, WorkroomSession, Decision, GeneratedOut
 
 
 CONVERSATIONAL_MODE = (
-    "You are in a live workroom discussion helping a TPM achieve their meeting goal. "
-    "Respond directly and concisely (3-5 sentences, hard max 6). "
+    "CRITICAL CONSTRAINT — You are in a live workroom discussion. "
+    "You MUST respond in 3-5 sentences (absolute hard max 6 sentences). "
+    "Do NOT use headers, bullet lists, numbered lists, or multi-section formatting. "
+    "Write in flowing prose paragraphs only. "
     "Lead with your key insight, recommendation, or answer. "
     "Add supporting reasoning only when it's non-obvious. "
     "You will get follow-up turns — do NOT try to cover everything in one response. "
     "If the user answers a question you asked, acknowledge it and build on it. "
     "If you need more information, ask ONE focused follow-up question. "
-    "Do not use headers or bullet lists unless specifically asked. "
     "Stay in your expert role — don't water down your expertise, just communicate it efficiently. "
     "End with your single most important takeaway: a recommendation, risk, or question for the group, prefixed with '→'."
 )
@@ -954,7 +955,7 @@ class Orchestrator:
         try:
             response = self._openai.chat.completions.create(
                 model=MODEL,
-                max_tokens=1200,
+                max_tokens=500,
                 messages=messages,
             )
             return self._respond("[Analyst]", response.choices[0].message.content.strip())
@@ -962,6 +963,94 @@ class Orchestrator:
             import logging
             logging.getLogger(__name__).exception("Analyst conversational API error: %s", exc)
             return self._respond("[Analyst]", "_(Analyst is temporarily unavailable due to a connection issue. Please try again.)_")
+
+    def _handle_planner_conversational(
+        self, message: str, conversation_history: Optional[list],
+        workroom: Optional[WorkroomSession] = None, doc_block: str = ""
+    ) -> dict:
+        """Planner in conversational workroom mode — acts as a prioritisation and planning advisor."""
+        requests = self.storage.list_requests()
+        context_parts = []
+        if requests:
+            top = requests[:5]
+            context_parts.append(f"PM backlog has {len(requests)} requests. Top: " +
+                                 "; ".join(f"{r.priority} {r.description[:60]}" for r in top))
+        if workroom:
+            context_parts.append(f"Workroom goal: {workroom.goal}")
+
+        system = (
+            "You are a strategic planning advisor for a Technical Program Manager. "
+            "You help prioritise work, identify dependencies, sequence tasks, "
+            "and structure focus areas based on available data and context.\n\n"
+            f"{CONVERSATIONAL_MODE}\n\n"
+            f"Context: {' '.join(context_parts)}"
+        )
+        if doc_block:
+            system += f"\n\n{doc_block}"
+
+        messages = [{"role": "system", "content": system}]
+        if conversation_history:
+            for msg in conversation_history[-10:]:
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                if content and role in ("user", "assistant"):
+                    messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": message})
+
+        try:
+            response = self._openai.chat.completions.create(
+                model=MODEL,
+                max_tokens=500,
+                messages=messages,
+            )
+            return self._respond("[Planner]", response.choices[0].message.content.strip())
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).exception("Planner conversational API error: %s", exc)
+            return self._respond("[Planner]", "_(Planner is temporarily unavailable. Please try again.)_")
+
+    def _handle_intake_conversational(
+        self, message: str, conversation_history: Optional[list],
+        workroom: Optional[WorkroomSession] = None, doc_block: str = ""
+    ) -> dict:
+        """Intake in conversational workroom mode — participates in discussion about requirements and document content."""
+        requests = self.storage.list_requests()
+        context_parts = []
+        if requests:
+            context_parts.append(f"PM backlog has {len(requests)} tracked requests.")
+        if workroom:
+            context_parts.append(f"Workroom goal: {workroom.goal}")
+
+        system = (
+            "You are a requirements intake specialist for a Technical Program Manager. "
+            "You identify, clarify, and structure customer requests, feature asks, and requirements "
+            "from conversations and documents. You help ensure nothing gets missed.\n\n"
+            f"{CONVERSATIONAL_MODE}\n\n"
+            f"Context: {' '.join(context_parts)}"
+        )
+        if doc_block:
+            system += f"\n\n{doc_block}"
+
+        messages = [{"role": "system", "content": system}]
+        if conversation_history:
+            for msg in conversation_history[-10:]:
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                if content and role in ("user", "assistant"):
+                    messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": message})
+
+        try:
+            response = self._openai.chat.completions.create(
+                model=MODEL,
+                max_tokens=500,
+                messages=messages,
+            )
+            return self._respond("[Intake]", response.choices[0].message.content.strip())
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).exception("Intake conversational API error: %s", exc)
+            return self._respond("[Intake]", "_(Intake is temporarily unavailable. Please try again.)_")
 
     # ------------------------------------------------------------------ #
     # Direct read handlers                                                #
@@ -1081,12 +1170,17 @@ class Orchestrator:
                 doc_block = team_block + doc_block
 
         if key == "intake":
-            # If there is an active document, treat as doc Q&A; else normal intake
+            # In workroom mode, participate in discussion; otherwise normal intake
+            if is_workroom:
+                return self._handle_intake_conversational(message, conversation_history, workroom, doc_block)
             if document_context:
                 return self._handle_document_query(message, document_context, conversation_history)
             return self._handle_intake(message)
 
         if key == "planner":
+            # In workroom mode, act as a prioritisation advisor
+            if is_workroom:
+                return self._handle_planner_conversational(message, conversation_history, workroom, doc_block)
             return self._respond(
                 "[Planner]",
                 "To build your day plan upload a briefing file in the Today tab, "

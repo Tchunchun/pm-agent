@@ -43,8 +43,10 @@ class CustomAgentRunner:
         system_prompt = self.agent_def.system_prompt
         if concise:
             system_prompt += (
-                "\n\nIMPORTANT: You are in a live workroom discussion. "
-                "Respond in 3-5 sentences (hard max 6). Lead with your key insight or recommendation. "
+                "\n\nCRITICAL CONSTRAINT — You are in a live workroom discussion. "
+                "You MUST respond in 3-5 sentences (absolute hard max 6 sentences). "
+                "Do NOT use headers, bullet lists, numbered lists, or multi-section formatting. "
+                "Write in flowing prose paragraphs only. "
                 "Cite specific facts from the document context — don't ask questions the doc already answers. "
                 "You'll get follow-up turns — don't try to cover everything now. "
                 "End with → your single most important takeaway, question, or recommendation."
@@ -107,7 +109,7 @@ class CustomAgentRunner:
             for _round in range(MAX_TOOL_ROUNDS):
                 call_kwargs: dict = {
                     "model": MODEL,
-                    "max_tokens": 1200 if concise else 2000,
+                    "max_tokens": 500 if concise else 2000,
                     "messages": messages,
                 }
                 if tools:

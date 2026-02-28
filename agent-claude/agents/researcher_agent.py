@@ -90,8 +90,10 @@ class ResearcherAgent:
             system += f"\n\n{doc_context}"
         if concise:
             system += (
-                "\n\nIMPORTANT: You are in a live workroom discussion. "
-                "Respond in 3-5 sentences (hard max 6) with your key findings. "
+                "\n\nCRITICAL CONSTRAINT — You are in a live workroom discussion. "
+                "You MUST respond in 3-5 sentences (absolute hard max 6 sentences). "
+                "Do NOT use headers, bullet lists, numbered lists, or multi-section formatting. "
+                "Write in flowing prose paragraphs only. "
                 "Cite specific facts from the document context above — don't ask questions the doc already answers. "
                 "You'll get follow-up turns — save the deep dive for when asked. "
                 "End with → the single most important finding or gap."
@@ -119,7 +121,7 @@ class ResearcherAgent:
         try:
             response = self.client.chat.completions.create(
                 model=MODEL,
-                max_tokens=1200 if concise else 2500,
+                max_tokens=500 if concise else 2500,
                 messages=messages,
             )
             return response.choices[0].message.content.strip()
