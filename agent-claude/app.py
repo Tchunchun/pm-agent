@@ -14,6 +14,7 @@ import streamlit as st
 from datetime import date, datetime, timezone
 
 from config import APP_TITLE, APP_ICON, INBOX_DIR, has_valid_credentials
+from auth import require_auth, get_current_user, is_auth_enabled, logout
 from models.workroom import WorkroomSession, CustomAgent, OUTPUT_TYPE_META
 from storage import StorageManager
 from agents import Orchestrator
@@ -57,6 +58,12 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed",
 )
+
+# ------------------------------------------------------------------ #
+# Authentication gate — must be before any other content               #
+# ------------------------------------------------------------------ #
+
+_auth_user = require_auth()  # Shows login page & st.stop() if not authed
 
 
 # ------------------------------------------------------------------ #
@@ -326,6 +333,24 @@ with st.sidebar:
 
     st.divider()
     st.caption("All data stays local.\nOnly inference is sent to the API.")
+
+    # ---- User info & Logout ----
+    if is_auth_enabled() and _auth_user:
+        st.divider()
+        _pic = _auth_user.get("picture", "")
+        _name = _auth_user.get("name", _auth_user.get("email", ""))
+        if _pic:
+            st.markdown(
+                f'<div style="display:flex;align-items:center;gap:8px">' 
+                f'<img src="{_pic}" style="width:28px;height:28px;border-radius:50%">' 
+                f'<span style="font-size:0.85rem">{_name}</span></div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.caption(f"👤 {_name}")
+        if st.button("🚪 Sign Out", key="btn_logout", use_container_width=True):
+            logout()
+            st.rerun()
 
 
 # ------------------------------------------------------------------ #

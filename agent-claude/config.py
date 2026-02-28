@@ -47,6 +47,13 @@ APP_ICON = "🧭"
 # Analyst low-data warning threshold
 MIN_REQUESTS_FOR_ANALYSIS = 10
 
+# ------------------------------------------------------------------ #
+# Google OAuth2 credentials                                            #
+# ------------------------------------------------------------------ #
+GOOGLE_CLIENT_ID     = os.environ.get("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+APP_URL              = os.environ.get("APP_URL", "http://localhost:8501")
+
 
 def has_valid_credentials() -> bool:
     """Return True if enough credentials are set to create an LLM client."""

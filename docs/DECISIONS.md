@@ -211,3 +211,33 @@ CustomAgent(key="my_agent", ..., skill_names=["get_current_date", "search_backlo
 - Created: `Tests/create_test_room3.py` — Test ROOM 3 with persisted doc context
 
 **Status:** Executed
+
+---
+
+## 2026-02-28 — Google OAuth2 Authentication (Feature Branch)
+
+**Decision:** Add Google OAuth2 authentication to gate app access behind Google sign-in. Implementation on `feat/google-auth` branch to avoid blocking `main` deployment.
+
+**Approach:**
+1. **Google OAuth2 Authorization Code Flow** — user clicks "Sign in with Google", redirected to Google consent, callback completes auth
+2. **Backward compatible** — auth only activates when `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` env vars are set; without them, app works as before (anonymous placeholder user)
+3. **Session-based** — re-auth per browser session; no cookie persistence in v1
+4. **User store** — `data/users.json` with atomic writes (matching existing StorageManager pattern)
+5. **Minimal dependencies** — only `requests` (already transitive via streamlit/openai); no heavy auth libraries
+
+**Scope:**
+- Created: `agent-claude/auth/__init__.py` — module exports: `require_auth`, `get_current_user`, `logout`, `is_auth_enabled`
+- Created: `agent-claude/auth/google_oauth.py` — OAuth URL builder, token exchange, userinfo fetch
+- Created: `agent-claude/auth/user_store.py` — JSON-backed user persistence with atomic writes
+- Created: `agent-claude/auth/login_page.py` — Streamlit login UI with branded card + Google button
+- Created: `agent-claude/auth/session.py` — Session management: CSRF state, callback handling, `require_auth()` gating
+- Modified: `agent-claude/config.py` — added `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `APP_URL` env vars
+- Modified: `agent-claude/app.py` — auth gate after `set_page_config`, logout button in sidebar, user avatar display
+- Modified: `agent-claude/requirements.txt` — added `requests>=2.28`
+
+**Env vars required for activation:**
+- `GOOGLE_CLIENT_ID` — from Google Cloud Console OAuth 2.0 credentials
+- `GOOGLE_CLIENT_SECRET` — from Google Cloud Console OAuth 2.0 credentials
+- `APP_URL` — (optional) defaults to `http://localhost:8501`; set to production URL in Azure
+
+**Status:** Executed

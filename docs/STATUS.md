@@ -64,6 +64,7 @@ Living tracker — updated after every execution. Cross-referenced with `docs/DE
 | Agent Category Overhaul | ✅ Done | 4-category system (pm_workflow/ai_product/career/life) + dynamic sections; category sync migration; manual create form updated | 2026-02-27 |
 | Agent Hub Cleanup + Prompt Divergence Fix | ✅ Done | Removed intake/analyst/researcher/writer from Agent Hub (solo-chat only); planner + challenger system prompts enriched for workroom conversational use | 2026-02-27 |
 | Skills Framework | ✅ Done | `skills/` package: Skill base class, SkillRegistry singleton, bootstrap; 3 built-in skills (get_current_date, search_backlog, get_recent_insights); CustomAgent.skill_names field; CustomAgentRunner tool-call loop | 2026-02-28 |
+| Google OAuth Authentication | ✅ Done | `auth/` package: Google OAuth2 login, user store, session gating; on `feat/google-auth` branch; backward compatible (disabled without env vars) | 2026-02-28 |
 
 ---
 
