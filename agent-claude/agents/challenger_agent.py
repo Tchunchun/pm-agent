@@ -137,7 +137,7 @@ class ChallengerAgent:
         try:
             response = self.client.chat.completions.create(
                 model=MODEL,
-                max_tokens=500 if concise else 2000,
+                max_completion_tokens=500 if concise else 2000,
                 messages=messages,
             )
             return response.choices[0].message.content.strip()

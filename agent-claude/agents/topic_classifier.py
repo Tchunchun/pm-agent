@@ -72,8 +72,7 @@ Please recommend the best subset of agents for this session."""
         try:
             response = self.client.chat.completions.create(
                 model=MODEL,
-                max_tokens=800,
-                temperature=0.2,
+                max_completion_tokens=800,
                 messages=[
                     {"role": "system", "content": CLASSIFIER_SYSTEM},
                     {"role": "user", "content": user_message},

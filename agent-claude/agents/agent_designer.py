@@ -77,8 +77,7 @@ Please identify the domain experts needed and propose a specialist agent team.""
         try:
             response = self.client.chat.completions.create(
                 model=MODEL,
-                max_tokens=2000,
-                temperature=0.4,
+                max_completion_tokens=2000,
                 messages=[
                     {"role": "system", "content": DESIGNER_SYSTEM},
                     {"role": "user", "content": user_message},

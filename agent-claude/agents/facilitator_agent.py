@@ -66,8 +66,7 @@ Keep the total length under 200 words."""
         try:
             response = self.client.chat.completions.create(
                 model=MODEL,
-                max_tokens=700,
-                temperature=0.5,
+                max_completion_tokens=700,
                 messages=[
                     {"role": "system", "content": FACILITATOR_SYSTEM},
                     {"role": "user", "content": prompt},
@@ -127,8 +126,7 @@ Use markdown formatting."""
         try:
             response = self.client.chat.completions.create(
                 model=MODEL,
-                max_tokens=600,
-                temperature=0.3,
+                max_completion_tokens=600,
                 messages=[
                     {"role": "system", "content": FACILITATOR_SYSTEM},
                     {"role": "user", "content": prompt},

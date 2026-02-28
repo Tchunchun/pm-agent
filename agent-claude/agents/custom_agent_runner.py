@@ -109,7 +109,7 @@ class CustomAgentRunner:
             for _round in range(MAX_TOOL_ROUNDS):
                 call_kwargs: dict = {
                     "model": MODEL,
-                    "max_tokens": 500 if concise else 2000,
+                    "max_completion_tokens": 500 if concise else 2000,
                     "messages": messages,
                 }
                 if tools:

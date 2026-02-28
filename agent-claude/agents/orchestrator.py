@@ -276,8 +276,7 @@ class Orchestrator:
         try:
             response = self._openai.chat.completions.create(
                 model=MODEL,
-                max_tokens=1200,
-                temperature=0,
+                max_completion_tokens=1200,
                 messages=[
                     {"role": "system", "content": (
                         "You are a document summarizer for a TPM working session. "
@@ -506,7 +505,7 @@ class Orchestrator:
         try:
             response = self._openai.chat.completions.create(
                 model=MODEL,
-                max_tokens=1500,
+                max_completion_tokens=1500,
                 messages=messages,
             )
             answer = response.choices[0].message.content.strip()
@@ -683,8 +682,7 @@ class Orchestrator:
                     {"role": "system", "content": self.SMART_ROUTE_SYSTEM},
                     {"role": "user", "content": user_prompt},
                 ],
-                temperature=0,
-                max_tokens=100,
+                max_completion_tokens=100,
             )
             raw = resp.choices[0].message.content.strip()
             # Parse JSON array from response
@@ -924,7 +922,7 @@ class Orchestrator:
         try:
             response = self._openai.chat.completions.create(
                 model=MODEL,
-                max_tokens=3000,
+                max_completion_tokens=3000,
                 messages=[
                     {"role": "system", "content": GENERATE_OUTPUT_SYSTEM},
                     {"role": "user", "content": user_prompt},

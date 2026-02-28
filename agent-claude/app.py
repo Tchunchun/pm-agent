@@ -233,8 +233,7 @@ Return ONLY valid JSON, no markdown fences:
     try:
         resp = client.chat.completions.create(
             model=MODEL,
-            max_tokens=400,
-            temperature=0.2,
+            max_completion_tokens=400,
             messages=[
                 {"role": "system", "content": "You extract structured meeting metadata from freeform text. Return only JSON."},
                 {"role": "user", "content": prompt},
