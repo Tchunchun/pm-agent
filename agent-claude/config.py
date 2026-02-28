@@ -7,8 +7,18 @@ _env_path = Path(__file__).parent / ".env"
 load_dotenv(_env_path)
 
 BASE_DIR = Path(__file__).parent
-DATA_DIR = BASE_DIR / "data"
-INBOX_DIR = Path.home() / "pm_agent_inbox"
+
+# Azure App Service: use /home mount for persistent storage so data
+# survives redeployments.  Local dev keeps the original paths.
+_AZURE = os.environ.get("WEBSITE_SITE_NAME")  # set automatically by Azure App Service
+
+if _AZURE:
+    DATA_DIR  = Path("/home/pm_agent_data")
+    INBOX_DIR = Path("/home/pm_agent_inbox")
+else:
+    DATA_DIR  = BASE_DIR / "data"
+    INBOX_DIR = Path.home() / "pm_agent_inbox"
+
 OUTPUT_DIR = BASE_DIR / "output"
 
 # Create directories if they don't exist
@@ -25,12 +35,12 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
 # Azure OpenAI — set these to switch from standard OpenAI to Azure
 AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
-AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-08-01-preview")
+AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
 
 # Model / deployment name
-# • Standard OpenAI: model name, e.g. "gpt-4o-mini"
+# • Standard OpenAI: model name, e.g. "gpt-5-mini"
 # • Azure OpenAI:    your deployment name (set via AZURE_OPENAI_DEPLOYMENT)
-MODEL = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini")
+MODEL = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-5-mini")
 
 APP_TITLE = "PM Agent"
 APP_ICON = "🧭"

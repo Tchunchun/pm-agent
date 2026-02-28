@@ -1,0 +1,55 @@
+# ────────────────────────────────────────────────────────────────────
+# CI/CD — Deploy PM Strategy Copilot to Azure App Service (Linux)
+# ────────────────────────────────────────────────────────────────────
+#
+# Prerequisites (one-time):
+#   1. Create a Linux App Service — Publish: Code, Runtime: Python 3.11
+#   2. Set startup command via CLI:
+#        az webapp config set --name <app> --resource-group <rg> \
+#          --startup-file "bash startup.sh"
+#   3. GitHub secrets auto-configured via Azure Deployment Center (OIDC)
+# ────────────────────────────────────────────────────────────────────
+
+name: Deploy to Azure App Service
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:          # allow manual trigger
+
+permissions:
+  id-token: write            # required for OIDC federated credentials
+  contents: read
+
+env:
+  APP_NAME: roundtable-ai
+  RESOURCE_GROUP: pmagent
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to Azure (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_4BB069DB58484D9E9D69BE0484819D7A }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_8FD9EA0AE8274314B9FCEA872100D7F2 }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_B38BC0872B0E49569B50328705ED8DE8 }}
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r agent-claude/requirements.txt
+
+      - name: Deploy to Azure Web App
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.APP_NAME }}
+          package: .
