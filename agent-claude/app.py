@@ -1,7 +1,7 @@
 """
 PM Strategy Copilot — Streamlit Web Application
 
-Five tabs: Chat | Today | Insights | Requests | Settings
+Pages: Chat (Workroom) | Settings (Agent Hub)
 """
 
 import sys
@@ -14,7 +14,6 @@ import streamlit as st
 from datetime import date, datetime, timezone
 
 from config import APP_TITLE, APP_ICON, OPENAI_API_KEY, INBOX_DIR
-from models import CustomerRequest, StrategicInsight
 from models.workroom import WorkroomSession, CustomAgent, OUTPUT_TYPE_META
 from storage import StorageManager
 from agents import Orchestrator
@@ -324,29 +323,6 @@ with st.sidebar:
     _nav_hub_type = "primary" if st.session_state.nav_page == "agent_hub" else "secondary"
     if st.button("🤖  Agent Hub", key="nav_agent_hub", use_container_width=True, type=_nav_hub_type):
         st.session_state.nav_page = "agent_hub"
-        st.rerun()
-
-    st.divider()
-
-    # ============================================================ #
-    # Preview                                                       #
-    # ============================================================ #
-    st.markdown("**Preview**")
-    st.caption("Coming soon — these features are in early preview.")
-
-    _nav_today_type = "primary" if st.session_state.nav_page == "today" else "secondary"
-    if st.button("📅  Today", key="nav_today", use_container_width=True, type=_nav_today_type):
-        st.session_state.nav_page = "today"
-        st.rerun()
-
-    _nav_ins_type = "primary" if st.session_state.nav_page == "insights" else "secondary"
-    if st.button("💡  Insights", key="nav_insights", use_container_width=True, type=_nav_ins_type):
-        st.session_state.nav_page = "insights"
-        st.rerun()
-
-    _nav_req_type = "primary" if st.session_state.nav_page == "requests" else "secondary"
-    if st.button("📋  Requests", key="nav_requests", use_container_width=True, type=_nav_req_type):
-        st.session_state.nav_page = "requests"
         st.rerun()
 
     st.divider()

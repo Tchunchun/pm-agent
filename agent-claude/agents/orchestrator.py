@@ -5,17 +5,17 @@ Responsibilities:
   - Preserve conversation context across messages
   - Route user intent to the right agent
   - Handle simple read queries directly without delegating
-  - Label every response with the agent that produced it: [Planner] [Analyst] [Intake]
+  - Label every response with the agent that produced it
 
 Routing table:
-  | Intent signal              | Routes to           |
-  |----------------------------|---------------------|
-  | Briefing file / "plan day" | intake → planner    |
-  | Log request / file upload  | intake-agent        |
-  | Trend / gap / risk query   | analyst-agent       |
-  | Decision / trade-off       | analyst-agent       |
-  | List/show queries          | Direct (no agent)   |
-  | Ambiguous                  | Asks for clarification |
+  | Intent signal              | Routes to                    |
+  |----------------------------|------------------------------|
+  | Challenge an idea          | challenger (CustomAgent)     |
+  | Draft a message            | writer (CustomAgent)         |
+  | Research a topic           | researcher (CustomAgent)     |
+  | Document Q&A               | Direct (built-in LLM call)  |
+  | Workroom messages          | smart_route → CustomAgent(s) |
+  | Ambiguous                  | Asks for clarification       |
 """
 
 import re
@@ -25,12 +25,6 @@ from openai import OpenAI  # kept for type hints only
 
 from config import MODEL, OPENAI_API_KEY, make_openai_client
 from storage import StorageManager
-from agents.intake_agent import IntakeAgent
-from agents.planner_agent import PlannerAgent
-from agents.analyst_agent import AnalystAgent
-from agents.challenger_agent import ChallengerAgent
-from agents.writer_agent import WriterAgent
-from agents.researcher_agent import ResearcherAgent
 from agents.custom_agent_runner import CustomAgentRunner
 from agents.facilitator_agent import FacilitatorAgent
 from models.workroom import CustomAgent, WorkroomSession, Decision, GeneratedOutput, OUTPUT_TYPE_META
@@ -106,9 +100,6 @@ _DECISION_MIN_LENGTH = 80
 
 # @mention → agent key map
 MENTION_MAP = {
-    "@intake": "intake", "@pm": "intake", "@log": "intake",
-    "@planner": "planner", "@plan": "planner",
-    "@analyst": "analyst", "@data": "analyst", "@analysis": "analyst",
     "@challenger": "challenger", "@challenge": "challenger",
     "@devil": "challenger", "@redteam": "challenger",
     "@writer": "writer", "@write": "writer", "@draft": "writer",
@@ -174,80 +165,6 @@ def _is_decision(text: str) -> bool:
 # Intent detection patterns                                           #
 # ------------------------------------------------------------------ #
 
-INTAKE_PATTERNS = [
-    r"\blog\s+this\b",
-    r"\badd\s+(request|this)\b",
-    r"\blog\s+(a\s+)?(request|issue|bug|feedback)\b",
-    r"\bsave\s+this\b",
-    r"\bnew\s+request\b",
-    r"\bstripe\s+said\b",
-    r"\bcustomer\s+reported\b",
-    r"\bcreate\s+(a\s+|the\s+)?(feature\s+)?request\b",
-    r"\badd\s+(a\s+)?new\s+(feature\s+)?request\b",
-    r"\btrack\s+this\s+request\b",
-    r"\bcapture\s+this\s+(request|as\s+a\s+request)\b",
-]
-
-PLAN_DAY_PATTERNS = [
-    r"\bplan\s+my\s+day\b",
-    r"\bstart\s+my\s+day\b",
-    r"\bmorning\s+plan\b",
-    r"\bbuild\s+(my\s+)?plan\b",
-    r"\bwhat\s+should\s+i\s+focus\b",
-]
-
-TREND_PATTERNS = [
-    r"\bwhat.{0,20}trend(ing|s)?\b",
-    r"\btrend(s)?\s+analysis\b",
-    r"\bwhat.{0,20}growing\b",
-    r"\bwhat.{0,20}emerging\b",
-]
-
-GAP_PATTERNS = [
-    r"\bwhat.{0,20}(we're|we are|i'm)\s+missing\b",
-    r"\bgap(s)?\s+analysis\b",
-    r"\bwhat.{0,20}miss(ed|ing)\b",
-    r"\bunaddressed\b",
-    r"\bno\s+response\b",
-]
-
-RISK_PATTERNS = [
-    r"\bwhat.{0,20}(at\s+)?risk\b",
-    r"\bwhat.{0,20}escalat(e|ing|ion)\b",
-    r"\brisk(s)?\s+(analysis|detection|alert)\b",
-    r"\bwhat.{0,20}urgent\b",
-    r"\bblocking\b",
-]
-
-DECISION_PATTERNS = [
-    r"\bhelp\s+me\s+decide\b",
-    r"\btrade.?off\b",
-    r"\bshould\s+i\s+(build|ship|prioritise|prioritize|choose)\b",
-    r"\bcompare\s+option\b",
-    r"\bwhich\s+(is|should)\s+(better|first|priority)\b",
-    r"\bdecision\s+support\b",
-]
-
-LIST_REQUESTS_PATTERNS = [
-    r"\b(show|list|display)\s+(all\s+)?request(s)?\b",
-    r"\bwhat\s+request(s)?\b",
-    r"\bopen\s+request(s)?\b",
-    r"\bmy\s+backlog\b",
-]
-
-LIST_INSIGHTS_PATTERNS = [
-    r"\b(show|list)\s+(all\s+)?insight(s)?\b",
-    r"\brecent\s+insight(s)?\b",
-    r"\bpast\s+insight(s)?\b",
-]
-
-LIST_PLANS_PATTERNS = [
-    r"\b(show|list)\s+(today|yesterday|past)\s+plan(s)?\b",
-    r"\bhistory\s+of\s+plan(s)?\b",
-    r"\bpast\s+plan(s)?\b",
-    r"\bplan\s+history\b",
-]
-
 CHALLENGE_PATTERNS = [
     r"\bchallenge\s+this\b",
     r"\bargue\s+against\b",
@@ -296,34 +213,14 @@ def _match(text: str, patterns: list[str]) -> bool:
 def _detect_intent(message: str) -> str:
     """
     Returns one of:
-      "intake", "plan_day", "trend", "gap", "risk", "decision",
-      "challenge", "write", "research",
-      "list_requests", "list_insights", "list_plans", "ambiguous"
+      "challenge", "write", "research", "ambiguous"
     """
-    if _match(message, PLAN_DAY_PATTERNS):
-        return "plan_day"
-    if _match(message, INTAKE_PATTERNS):
-        return "intake"
     if _match(message, CHALLENGE_PATTERNS):
         return "challenge"
     if _match(message, WRITE_PATTERNS):
         return "write"
     if _match(message, RESEARCH_PATTERNS):
         return "research"
-    if _match(message, RISK_PATTERNS):
-        return "risk"
-    if _match(message, DECISION_PATTERNS):
-        return "decision"
-    if _match(message, TREND_PATTERNS):
-        return "trend"
-    if _match(message, GAP_PATTERNS):
-        return "gap"
-    if _match(message, LIST_REQUESTS_PATTERNS):
-        return "list_requests"
-    if _match(message, LIST_INSIGHTS_PATTERNS):
-        return "list_insights"
-    if _match(message, LIST_PLANS_PATTERNS):
-        return "list_plans"
     return "ambiguous"
 
 
@@ -344,19 +241,9 @@ class Orchestrator:
 
     def __init__(self, storage: StorageManager):
         self.storage = storage
-        self.intake = IntakeAgent(storage)
-        self.planner = PlannerAgent(storage)
-        self.analyst = AnalystAgent(storage)
-        self.challenger = ChallengerAgent(storage)
-        self.writer = WriterAgent(storage)
-        self.researcher = ResearcherAgent(storage)
         self._openai = make_openai_client()
         # Custom agent runners — loaded lazily from storage
         self._custom_runners: dict[str, CustomAgentRunner] = {}
-
-        # Pending confirmation state
-        self._pending_action: Optional[str] = None
-        self._pending_data: Optional[object] = None
 
         # Document summary cache: {filename: summary_text}
         self._doc_summary_cache: dict[str, str] = {}
@@ -457,35 +344,21 @@ class Orchestrator:
         workroom: Optional[WorkroomSession] = None,
     ) -> dict:
         """
-        Route a user message (and optional file) to the appropriate agent.
+        Route a user message to the appropriate agent.
 
         Args:
             message: User's text message.
-            file_bytes: Raw bytes of an uploaded file — only set on first upload,
-                        never when handling follow-up text messages.
-            filename: Original filename of the upload.
-            date: ISO date string for day-plan context.
+            file_bytes: Unused (kept for API compatibility).
+            filename: Unused (kept for API compatibility).
+            date: Unused (kept for API compatibility).
             document_context: {"filename": str, "text": str} of a previously
                               uploaded document the user may be asking about.
             conversation_history: Recent chat messages [{role, content}] for
                                   context-aware document Q&A.
             active_agents: List of agent keys that are active in this session
-                           (e.g. ["intake", "analyst", "challenger"]).
+                           (e.g. ["challenger", "writer", "researcher"]).
                            None or empty = all agents active (no restriction).
         """
-        # ---- Handle pending confirmations first (text only, ignore file) ----
-        if self._pending_action == "confirm_requests":
-            return self._handle_confirm_requests(message)
-
-        if self._pending_action == "confirm_briefing_mentions":
-            return self._handle_confirm_briefing_mentions(message)
-
-        # ---- New file upload ----
-        if file_bytes is not None:
-            if not self._agent_allowed("intake", active_agents):
-                return self._agent_blocked("Intake", active_agents)
-            return self._handle_file_upload(file_bytes, filename, date)
-
         # ---- @mention: direct routing (supports multiple @mentions) ----
         # Build full list of all known agent keys for mention detection
         all_known = list(MENTION_MAP.values())
@@ -519,57 +392,14 @@ class Orchestrator:
                     workroom=workroom,
                 )
 
-        # ---- Detect intent from message ----
-        intent = _detect_intent(message)
-
-        if intent == "plan_day":
-            if not self._agent_allowed("planner", active_agents):
-                return self._agent_blocked("Planner", active_agents)
-            return self._respond(
-                "[System]",
-                "To build your day plan, please paste your Copilot briefing into the chat "
-                "or upload a briefing file in the Today tab. Once I have it, I'll run the morning workflow.",
-            )
-
-        if intent == "intake":
-            if not self._agent_allowed("intake", active_agents):
-                return self._agent_blocked("Intake", active_agents)
-            return self._handle_intake(message)
-
-        if intent == "challenge":
-            if not self._agent_allowed("challenger", active_agents):
-                return self._agent_blocked("Challenger", active_agents)
-            return self._handle_challenger(message, conversation_history)
-
-        if intent == "write":
-            if not self._agent_allowed("writer", active_agents):
-                return self._agent_blocked("Writer", active_agents)
-            return self._handle_writer(message, conversation_history)
-
-        if intent in ("trend", "gap", "risk", "decision"):
-            if not self._agent_allowed("analyst", active_agents):
-                return self._agent_blocked("Analyst", active_agents)
-            return self._handle_analyst(intent, message)
-
-        if intent == "research":
-            if not self._agent_allowed("researcher", active_agents):
-                return self._agent_blocked("Researcher", active_agents)
-            return self._handle_researcher(message, conversation_history)
-
-        if intent == "list_requests":
-            return self._handle_list_requests()
-
-        if intent == "list_insights":
-            return self._handle_list_insights()
-
-        if intent == "list_plans":
-            return self._handle_list_plans()
-
-        # ---- Workroom: smart route to best agent(s) ----
-        # This must come BEFORE the ambiguous fallback so that natural
-        # conversational messages ("good questions", "please continue",
-        # "thanks, what next?") are routed to agents instead of showing
-        # a static menu.
+        # ---- Workroom: bypass intent detection, use smart_route ----
+        # In workroom mode, let smart_route (LLM-driven) decide which agents
+        # respond. Intent-based routing was designed for the solo chat tab
+        # and doesn't understand workroom context (concise mode, team
+        # awareness, conversation history). Without this early exit,
+        # messages containing words like "blocking" or "priorities" trigger
+        # solo-chat handlers that return error messages or static prompts
+        # instead of engaging the workroom agents conversationally.
         if workroom and active_agents and len(active_agents) > 0:
             return self.smart_route(
                 message,
@@ -579,169 +409,42 @@ class Orchestrator:
                 workroom=workroom,
             )
 
+        # ---- Detect intent from message (solo chat only) ----
+        intent = _detect_intent(message)
+
+        if intent == "challenge":
+            if not self._agent_allowed("challenger", active_agents):
+                return self._agent_blocked("Challenger", active_agents)
+            return self._route_by_key("challenger", message, conversation_history, document_context, active_agents)
+
+        if intent == "write":
+            if not self._agent_allowed("writer", active_agents):
+                return self._agent_blocked("Writer", active_agents)
+            return self._route_by_key("writer", message, conversation_history, document_context, active_agents)
+
+        if intent == "research":
+            if not self._agent_allowed("researcher", active_agents):
+                return self._agent_blocked("Researcher", active_agents)
+            return self._route_by_key("researcher", message, conversation_history, document_context, active_agents)
+
         # ---- Document Q&A — answer from active document context ----
         if document_context:
-            if not self._agent_allowed("intake", active_agents):
-                return self._agent_blocked("Intake", active_agents)
             return self._handle_document_query(message, document_context, conversation_history)
 
         # Ambiguous — general chat fallback: show available agents
-        active_list = active_agents or ["intake", "planner", "analyst", "challenger", "writer", "researcher"]
+        active_list = active_agents or ["challenger", "writer", "researcher"]
         examples = []
-        if "intake" in active_list:
-            examples.append("- **Log a request**: 'Log this: [description]'")
-        if "analyst" in active_list:
-            examples.append("- **Analyse trends**: 'What's trending?'\n"
-                            "- **Check risks**: 'What's at risk?'\n"
-                            "- **Find gaps**: 'What are we missing?'\n"
-                            "- **Decision help**: 'Help me decide between X and Y'")
         if "challenger" in active_list:
             examples.append("- **Challenge an idea**: 'Challenge this: [plan]' or 'Red team this'")
         if "writer" in active_list:
             examples.append("- **Draft a message**: 'Draft an email to [recipient] about [topic]'")
         if "researcher" in active_list:
             examples.append("- **Research a topic**: 'Research: [topic]' or 'Deep dive on [subject]'")
-        if "planner" in active_list:
-            examples.append("- **Plan your day**: Upload a briefing file in the Today tab")
 
         return self._respond(
             "[System]",
             "I'm not sure what you'd like to do. Here are your options with the active agents:\n\n"
             + "\n".join(examples),
-        )
-
-    # ------------------------------------------------------------------ #
-    # File upload handler                                                 #
-    # ------------------------------------------------------------------ #
-
-    def _handle_file_upload(
-        self, file_bytes: bytes, filename: str, date: str
-    ) -> dict:
-        ext = filename.lower().split(".")[-1] if "." in filename else ""
-
-        if ext in ("md", "txt"):
-            # Briefing file — morning workflow
-            return self._handle_briefing_file(file_bytes, filename, date)
-        elif ext in ("csv", "pdf", "docx"):
-            # Bulk import
-            return self._handle_bulk_import(file_bytes, filename)
-        else:
-            return self._respond(
-                "[Intake]",
-                f"Unsupported file type '.{ext}'. Supported: .md, .txt (briefing), .csv, .pdf, .docx (bulk import).",
-            )
-
-    def _handle_briefing_file(
-        self, file_bytes: bytes, filename: str, date: str
-    ) -> dict:
-        partial_plan, mentions = self.intake.process_briefing(
-            file_bytes, filename=filename, date=date
-        )
-
-        if mentions:
-            self._pending_action = "confirm_briefing_mentions"
-            self._pending_data = {
-                "partial_plan": partial_plan,
-                "mentions": mentions,
-            }
-            mentions_text = "\n".join(
-                f"  - **{m.get('company', '?')}**: {m.get('context', '')} (Sentiment: {m.get('sentiment', '?')})"
-                for m in mentions
-            )
-            return self._respond(
-                "[Intake]",
-                f"I've processed your briefing: **{filename}**\n\n"
-                f"I found **{len(mentions)} customer mention(s)**:\n{mentions_text}\n\n"
-                f"Would you like to **log them as customer requests**?\n"
-                f"Reply: **[Log all]** · **[Skip]** · **[Review]** (to see each one)",
-                pending_action="confirm_briefing_mentions",
-                pending_data={"partial_plan": partial_plan, "mentions": mentions},
-            )
-
-        # No mentions — go straight to planning
-        return self._run_planner(partial_plan)
-
-    def _handle_confirm_briefing_mentions(self, message: str) -> dict:
-        data = self._pending_data or {}
-        partial_plan = data.get("partial_plan")
-        mentions = data.get("mentions", [])
-        msg_lower = message.lower().strip()
-
-        self._pending_action = None
-        self._pending_data = None
-
-        if any(x in msg_lower for x in ("log all", "log", "yes", "save all")):
-            # Log all as requests
-            saved = []
-            for m in mentions:
-                req = self.intake.classify_request(
-                    text=m.get("context", m.get("company", "")),
-                    source="copilot_briefing",
-                    source_ref=partial_plan.briefing_source if partial_plan else "briefing",
-                )
-                saved.append(req)
-            log_msg = f"Logged {len(saved)} request(s) from customer mentions. "
-        elif any(x in msg_lower for x in ("skip", "no", "skip all")):
-            log_msg = "Skipped customer mentions. "
-        else:
-            log_msg = "Skipping customer mention logging. "
-
-        if partial_plan is None:
-            return self._respond("[Intake]", log_msg + "No briefing plan found — please re-upload.")
-
-        return self._run_planner(partial_plan, prefix=log_msg)
-
-    def _run_planner(self, partial_plan, prefix: str = "") -> dict:
-        plan = self.planner.build_day_plan(partial_plan)
-        items_text = "\n".join(
-            f"  {item.rank}. [{item.priority if item.linked_request_ids else '—'}] "
-            f"**{item.title}** — {item.why} _(~{item.estimated_minutes} min)_"
-            for item in plan.focus_items
-        )
-        return self._respond(
-            "[Planner]",
-            f"{prefix}Your day plan for **{plan.date}** is ready! "
-            f"({len(plan.focus_items)} focus items)\n\n"
-            f"Check the **Today** tab to see your plan and mark items done.\n\n"
-            f"{items_text}",
-            data={"day_plan": plan.model_dump()},
-        )
-
-    def _handle_bulk_import(self, file_bytes: bytes, filename: str) -> dict:
-        from utils.file_parser import extract_text_from_file
-        doc_text = extract_text_from_file(file_bytes, filename)
-
-        requests = self.intake.process_bulk_file(file_bytes, filename=filename)
-
-        if not requests:
-            return self._respond(
-                "[Intake]",
-                f"No customer requests found in **{filename}**. "
-                "Make sure the file contains request descriptions.\n\n"
-                "You can also ask me questions about the document.",
-                data={"document": {"filename": filename, "text": doc_text}},
-            )
-
-        self._pending_action = "confirm_requests"
-        self._pending_data = requests
-
-        preview_lines = []
-        for i, req in enumerate(requests[:5], 1):
-            preview_lines.append(
-                f"  {i}. [{req.priority}] {req.classification}: {req.description}"
-            )
-        if len(requests) > 5:
-            preview_lines.append(f"  ... and {len(requests) - 5} more")
-
-        return self._respond(
-            "[Intake]",
-            f"I found **{len(requests)} request(s)** in **{filename}**:\n\n"
-            + "\n".join(preview_lines)
-            + "\n\nReply **[Save all]** to confirm, or **[Cancel]** to discard.\n\n"
-            + "_You can also ask me questions about this document at any time._",
-            pending_action="confirm_requests",
-            pending_data=requests,
-            data={"document": {"filename": filename, "text": doc_text}},
         )
 
     # ------------------------------------------------------------------ #
@@ -765,30 +468,6 @@ class Orchestrator:
             f"Active agents: {available}.\n\n"
             f"Use the agent selector above the chat to add **{agent_name}** to your session.",
         )
-
-    # ------------------------------------------------------------------ #
-    # Tier 2 — Challenger handler                                         #
-    # ------------------------------------------------------------------ #
-
-    def _handle_challenger(self, message: str, conversation_history: Optional[list], concise: bool = False, doc_context: str = "") -> dict:
-        result = self.challenger.challenge(message, conversation_history, concise=concise, doc_context=doc_context)
-        return self._respond("[Challenger]", result)
-
-    # ------------------------------------------------------------------ #
-    # Tier 2 — Writer handler                                             #
-    # ------------------------------------------------------------------ #
-
-    def _handle_writer(self, message: str, conversation_history: Optional[list], concise: bool = False, doc_context: str = "") -> dict:
-        result = self.writer.write(message, conversation_history, concise=concise, doc_context=doc_context)
-        return self._respond("[Writer]", result)
-
-    # ------------------------------------------------------------------ #
-    # Tier 2 — Researcher handler                                         #
-    # ------------------------------------------------------------------ #
-
-    def _handle_researcher(self, message: str, conversation_history: Optional[list], concise: bool = False, doc_context: str = "") -> dict:
-        result = self.researcher.research(message, conversation_history, concise=concise, doc_context=doc_context)
-        return self._respond("[Researcher]", result)
 
     # ------------------------------------------------------------------ #
     # Document Q&A                                                        #
@@ -836,278 +515,9 @@ class Orchestrator:
             logging.getLogger(__name__).exception("Document Q&A API error: %s", exc)
             answer = "_(Unable to process document query due to a connection issue. Please try again.)_"
         return self._respond(
-            "[Intake]",
+            "[Document Q&A]",
             f"_{filename}_\n\n{answer}",
         )
-
-    def _handle_confirm_requests(self, message: str) -> dict:
-        requests = self._pending_data or []
-        self._pending_action = None
-        self._pending_data = None
-
-        msg_lower = message.lower().strip()
-        if any(x in msg_lower for x in ("save", "confirm", "yes", "log", "ok")):
-            saved = self.intake.save_requests(requests)
-            return self._respond(
-                "[Intake]",
-                f"Saved **{len(saved)} request(s)** to your backlog. "
-                "They're now available in the Requests tab.",
-                data={"saved_count": len(saved)},
-            )
-        return self._respond("[Intake]", "Import cancelled. No requests were saved.")
-
-    # ------------------------------------------------------------------ #
-    # Intake handler (single request from chat)                           #
-    # ------------------------------------------------------------------ #
-
-    def _handle_intake(self, message: str) -> dict:
-        req = self.intake.extract_and_log_from_chat(message)
-        return self._respond(
-            "[Intake]",
-            f"Logged request **#{req.id}**:\n\n"
-            f"- **Description**: {req.description}\n"
-            f"- **Priority**: {req.priority} — {req.priority_rationale}\n"
-            f"- **Type**: {req.classification} — {req.classification_rationale}\n"
-            f"- **Tags**: {', '.join(req.tags) or 'none'}\n\n"
-            f"Find it in the **Requests** tab.",
-            data={"request": req.model_dump()},
-        )
-
-    # ------------------------------------------------------------------ #
-    # Analyst handler                                                     #
-    # ------------------------------------------------------------------ #
-
-    def _handle_analyst(self, intent: str, message: str) -> dict:
-        insights, warning = self.analyst.run_from_intent(intent, message)
-
-        if not insights:
-            return self._respond(
-                "[Analyst]",
-                "I analysed your request data but couldn't identify a clear signal. "
-                "Try importing more requests or being more specific.",
-                warning=warning,
-            )
-
-        mode_labels = {
-            "trend": "TREND",
-            "gap": "GAP",
-            "risk": "RISK",
-            "decision": "DECISION",
-        }
-        label = mode_labels.get(intent, "INSIGHT")
-
-        lines = []
-        for ins in insights:
-            lines.append(
-                f"**{label} · {ins.confidence.upper()} · {ins.period}**\n\n"
-                f"**What:** {ins.what}\n\n"
-                f"**Why:** {ins.why}\n\n"
-                f"**Action:** {ins.recommended_action}\n\n"
-                f"_Saved as insight [{ins.id}]_"
-            )
-
-        text = "\n\n---\n\n".join(lines)
-        return self._respond(
-            "[Analyst]",
-            text,
-            warning=warning,
-            data={"insights": [i.model_dump() for i in insights]},
-        )
-
-    def _handle_analyst_conversational(
-        self, message: str, conversation_history: Optional[list],
-        workroom: Optional[WorkroomSession] = None, doc_block: str = ""
-    ) -> dict:
-        """Analyst in conversational workroom mode — uses LLM with conversation history and concise style."""
-        requests = self.storage.list_requests()
-        insights = self.storage.list_insights()
-
-        # Build context summary
-        context_parts = []
-        if requests:
-            top = requests[:5]
-            context_parts.append(f"PM backlog has {len(requests)} requests. Top: " +
-                                 "; ".join(f"{r.priority} {r.description[:60]}" for r in top))
-        if insights:
-            context_parts.append(f"{len(insights)} existing insights on file.")
-        if workroom:
-            context_parts.append(f"Workroom goal: {workroom.goal}")
-
-        system = (
-            "You are an expert data analyst and strategic advisor for a Technical Program Manager. "
-            "You analyse trends, gaps, risks, and help with decisions based on customer requests, "
-            "insights, and business context.\n\n"
-            f"{CONVERSATIONAL_MODE}\n\n"
-            f"Context: {' '.join(context_parts)}"
-        )
-        if doc_block:
-            system += f"\n\n{doc_block}"
-
-        messages = [{"role": "system", "content": system}]
-        if conversation_history:
-            for msg in conversation_history[-10:]:
-                role = msg.get("role", "user")
-                content = msg.get("content", "")
-                if content and role in ("user", "assistant"):
-                    messages.append({"role": role, "content": content})
-        messages.append({"role": "user", "content": message})
-
-        try:
-            response = self._openai.chat.completions.create(
-                model=MODEL,
-                max_tokens=500,
-                messages=messages,
-            )
-            return self._respond("[Analyst]", response.choices[0].message.content.strip())
-        except Exception as exc:
-            import logging
-            logging.getLogger(__name__).exception("Analyst conversational API error: %s", exc)
-            return self._respond("[Analyst]", "_(Analyst is temporarily unavailable due to a connection issue. Please try again.)_")
-
-    def _handle_planner_conversational(
-        self, message: str, conversation_history: Optional[list],
-        workroom: Optional[WorkroomSession] = None, doc_block: str = ""
-    ) -> dict:
-        """Planner in conversational workroom mode — acts as a prioritisation and planning advisor."""
-        requests = self.storage.list_requests()
-        context_parts = []
-        if requests:
-            top = requests[:5]
-            context_parts.append(f"PM backlog has {len(requests)} requests. Top: " +
-                                 "; ".join(f"{r.priority} {r.description[:60]}" for r in top))
-        if workroom:
-            context_parts.append(f"Workroom goal: {workroom.goal}")
-
-        system = (
-            "You are a strategic planning advisor for a Technical Program Manager. "
-            "You help prioritise work, identify dependencies, sequence tasks, "
-            "and structure focus areas based on available data and context.\n\n"
-            f"{CONVERSATIONAL_MODE}\n\n"
-            f"Context: {' '.join(context_parts)}"
-        )
-        if doc_block:
-            system += f"\n\n{doc_block}"
-
-        messages = [{"role": "system", "content": system}]
-        if conversation_history:
-            for msg in conversation_history[-10:]:
-                role = msg.get("role", "user")
-                content = msg.get("content", "")
-                if content and role in ("user", "assistant"):
-                    messages.append({"role": role, "content": content})
-        messages.append({"role": "user", "content": message})
-
-        try:
-            response = self._openai.chat.completions.create(
-                model=MODEL,
-                max_tokens=500,
-                messages=messages,
-            )
-            return self._respond("[Planner]", response.choices[0].message.content.strip())
-        except Exception as exc:
-            import logging
-            logging.getLogger(__name__).exception("Planner conversational API error: %s", exc)
-            return self._respond("[Planner]", "_(Planner is temporarily unavailable. Please try again.)_")
-
-    def _handle_intake_conversational(
-        self, message: str, conversation_history: Optional[list],
-        workroom: Optional[WorkroomSession] = None, doc_block: str = ""
-    ) -> dict:
-        """Intake in conversational workroom mode — participates in discussion about requirements and document content."""
-        requests = self.storage.list_requests()
-        context_parts = []
-        if requests:
-            context_parts.append(f"PM backlog has {len(requests)} tracked requests.")
-        if workroom:
-            context_parts.append(f"Workroom goal: {workroom.goal}")
-
-        system = (
-            "You are a requirements intake specialist for a Technical Program Manager. "
-            "You identify, clarify, and structure customer requests, feature asks, and requirements "
-            "from conversations and documents. You help ensure nothing gets missed.\n\n"
-            f"{CONVERSATIONAL_MODE}\n\n"
-            f"Context: {' '.join(context_parts)}"
-        )
-        if doc_block:
-            system += f"\n\n{doc_block}"
-
-        messages = [{"role": "system", "content": system}]
-        if conversation_history:
-            for msg in conversation_history[-10:]:
-                role = msg.get("role", "user")
-                content = msg.get("content", "")
-                if content and role in ("user", "assistant"):
-                    messages.append({"role": role, "content": content})
-        messages.append({"role": "user", "content": message})
-
-        try:
-            response = self._openai.chat.completions.create(
-                model=MODEL,
-                max_tokens=500,
-                messages=messages,
-            )
-            return self._respond("[Intake]", response.choices[0].message.content.strip())
-        except Exception as exc:
-            import logging
-            logging.getLogger(__name__).exception("Intake conversational API error: %s", exc)
-            return self._respond("[Intake]", "_(Intake is temporarily unavailable. Please try again.)_")
-
-    # ------------------------------------------------------------------ #
-    # Direct read handlers                                                #
-    # ------------------------------------------------------------------ #
-
-    def _handle_list_requests(self) -> dict:
-        requests = self.storage.list_requests()
-        if not requests:
-            return self._respond(
-                "[System]",
-                "No requests in your backlog yet. "
-                "Add some via the **Requests** tab or say 'Log this: [description]'.",
-            )
-        p0 = sum(1 for r in requests if r.priority == "P0")
-        p1 = sum(1 for r in requests if r.priority == "P1")
-        lines = [f"**{len(requests)} requests** (P0: {p0}, P1: {p1})\n"]
-        for req in requests[:10]:
-            lines.append(
-                f"- **#{req.id}** [{req.priority}] {req.classification}: {req.description}"
-            )
-        if len(requests) > 10:
-            lines.append(f"_...and {len(requests) - 10} more. See the Requests tab._")
-        return self._respond("[System]", "\n".join(lines))
-
-    def _handle_list_insights(self) -> dict:
-        insights = self.storage.list_insights()
-        if not insights:
-            return self._respond(
-                "[System]",
-                "No strategic insights yet. "
-                "Ask 'What's trending?' or 'What's at risk?' to generate some.",
-            )
-        lines = [f"**{len(insights)} strategic insights**\n"]
-        for ins in insights[:10]:
-            status = "🟢 In plan" if ins.in_day_plan else "🟡 Not yet acted on"
-            lines.append(
-                f"- **[{ins.id}]** {ins.insight_type.upper()}·{ins.confidence}: "
-                f"{ins.title} — {status}"
-            )
-        return self._respond("[System]", "\n".join(lines))
-
-    def _handle_list_plans(self) -> dict:
-        plans = self.storage.list_day_plans(limit=5)
-        if not plans:
-            return self._respond(
-                "[System]",
-                "No day plans yet. Upload a briefing file or go to the Today tab to start.",
-            )
-        lines = [f"**{len(plans)} recent day plan(s)**\n"]
-        for plan in plans:
-            done = sum(1 for item in plan.focus_items if item.done)
-            total = len(plan.focus_items)
-            lines.append(
-                f"- **{plan.date}**: {total} focus items, {done} done "
-                f"(source: {plan.briefing_source})"
-            )
-        return self._respond("[System]", "\n".join(lines))
 
     # ------------------------------------------------------------------ #
     # Helper                                                              #
@@ -1168,38 +578,6 @@ class Orchestrator:
                     "If a point overlaps with another agent's area, mention it briefly and move on."
                 )
                 doc_block = team_block + doc_block
-
-        if key == "intake":
-            # In workroom mode, participate in discussion; otherwise normal intake
-            if is_workroom:
-                return self._handle_intake_conversational(message, conversation_history, workroom, doc_block)
-            if document_context:
-                return self._handle_document_query(message, document_context, conversation_history)
-            return self._handle_intake(message)
-
-        if key == "planner":
-            # In workroom mode, act as a prioritisation advisor
-            if is_workroom:
-                return self._handle_planner_conversational(message, conversation_history, workroom, doc_block)
-            return self._respond(
-                "[Planner]",
-                "To build your day plan upload a briefing file in the Today tab, "
-                "or paste one directly in chat.",
-            )
-
-        if key == "analyst":
-            if is_workroom:
-                return self._handle_analyst_conversational(message, conversation_history, workroom, doc_block)
-            return self._handle_analyst("decision", message)
-
-        if key == "challenger":
-            return self._handle_challenger(message, conversation_history, concise=is_workroom, doc_context=doc_block)
-
-        if key == "writer":
-            return self._handle_writer(message, conversation_history, concise=is_workroom, doc_context=doc_block)
-
-        if key == "researcher":
-            return self._handle_researcher(message, conversation_history, concise=is_workroom, doc_context=doc_block)
 
         if key == "facilitator":
             fac = FacilitatorAgent()
@@ -1355,12 +733,6 @@ class Orchestrator:
         """Build a list of {key, description} dicts for active agents."""
         # Built-in descriptions
         BUILTIN_DESC = {
-            "intake": "Logs requests, processes files, document Q&A",
-            "planner": "Plans your day, synthesises priorities",
-            "analyst": "Trend analysis, gap analysis, risk assessment, decision support",
-            "challenger": "Red-teams ideas, argues the opposing view",
-            "writer": "Drafts emails, Teams messages, exec briefs",
-            "researcher": "Deep dives, industry context, customer background",
             "facilitator": "Facilitates discussion, summarises progress",
         }
         result = []
@@ -1406,7 +778,7 @@ class Orchestrator:
             }
         """
         # Determine which agents to call
-        all_builtin = ["intake", "planner", "analyst", "challenger", "writer", "researcher"]
+        all_builtin = ["facilitator"]
         # Get custom agents too
         custom_keys = [ca.key for ca in self.storage.list_custom_agents()]
 
