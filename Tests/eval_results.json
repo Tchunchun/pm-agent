@@ -1,0 +1,530 @@
+[
+  {
+    "timestamp": "2026-02-27T10:00:00+00:00",
+    "workroom": "[Test ROOM 3] Denial Intelligence Model Requirement",
+    "agents": [
+      "ai_req_writer",
+      "science_advisor",
+      "biz_clarifier"
+    ],
+    "scorecard": {
+      "tests_run": 6,
+      "total_responses": 13,
+      "fallback_hits": 0,
+      "conciseness_pass": 10,
+      "conciseness_total": 13,
+      "conciseness_pct": 77,
+      "no_structure_pass": 13,
+      "no_structure_total": 13,
+      "no_structure_pct": 100,
+      "takeaway_pass": 0,
+      "takeaway_total": 13,
+      "takeaway_pct": 0,
+      "decision_count": 2,
+      "total_time_s": 85.0,
+      "avg_time_s": 14.2
+    },
+    "thresholds": {
+      "routing_fallback_max": 0,
+      "conciseness_min_pct": 60,
+      "no_structure_min_pct": 80,
+      "decision_max": 3
+    },
+    "checks": {
+      "routing": true,
+      "conciseness": true,
+      "no_structure": true,
+      "decision_detection": true
+    },
+    "overall_pass": true,
+    "note": "Baseline after workroom quality fixes + Challenger/Writer/Researcher consolidation"
+  },
+  {
+    "timestamp": "2026-02-27T14:00:00+00:00",
+    "workroom": "[Test ROOM 3] Denial Intelligence Model Requirement",
+    "agents": [
+      "ai_req_writer",
+      "science_advisor",
+      "biz_clarifier"
+    ],
+    "scorecard": {
+      "tests_run": 6,
+      "total_responses": 13,
+      "fallback_hits": 0,
+      "conciseness_pass": 9,
+      "conciseness_total": 13,
+      "conciseness_pct": 69,
+      "no_structure_pass": 13,
+      "no_structure_total": 13,
+      "no_structure_pct": 100,
+      "takeaway_pass": 0,
+      "takeaway_total": 13,
+      "takeaway_pct": 0,
+      "decision_count": 2,
+      "total_time_s": 78.0,
+      "avg_time_s": 13.0
+    },
+    "thresholds": {
+      "routing_fallback_max": 0,
+      "conciseness_min_pct": 60,
+      "no_structure_min_pct": 80,
+      "decision_max": 3
+    },
+    "checks": {
+      "routing": true,
+      "conciseness": true,
+      "no_structure": true,
+      "decision_detection": true
+    },
+    "overall_pass": true,
+    "note": "Post Challenger/Writer/Researcher consolidation to CustomAgentRunner"
+  },
+  {
+    "timestamp": "2026-02-28T18:42:48.279254+00:00",
+    "workroom": "[Test ROOM 3] Denial Intelligence Model Requirement",
+    "agents": [
+      "ai_req_writer",
+      "science_advisor",
+      "biz_clarifier"
+    ],
+    "scorecard": {
+      "tests_run": 6,
+      "total_responses": 13,
+      "fallback_hits": 0,
+      "conciseness_pass": 12,
+      "conciseness_total": 13,
+      "conciseness_pct": 92,
+      "no_structure_pass": 13,
+      "no_structure_total": 13,
+      "no_structure_pct": 100,
+      "takeaway_pass": 9,
+      "takeaway_total": 13,
+      "takeaway_pct": 69,
+      "decision_count": 2,
+      "total_time_s": 48.6,
+      "avg_time_s": 8.1
+    },
+    "thresholds": {
+      "routing_fallback_max": 0,
+      "conciseness_min_pct": 60,
+      "no_structure_min_pct": 80,
+      "decision_max": 3
+    },
+    "checks": {
+      "routing": true,
+      "conciseness": true,
+      "no_structure": true,
+      "decision_detection": true
+    },
+    "overall_pass": true,
+    "questions": [
+      {
+        "id": "Q1",
+        "label": "Open-ended kick-off",
+        "expected": "round_table",
+        "agent": "[Round Table]",
+        "is_fallback": false,
+        "elapsed_s": 19.3,
+        "response_count": 3,
+        "responses": [
+          {
+            "sentences": 6,
+            "concise": true,
+            "has_structure": false,
+            "has_takeaway": true,
+            "is_decision": false,
+            "char_count": 1178,
+            "agent": "[\ud83d\udcdd AI Requirements Writer]"
+          },
+          {
+            "sentences": 6,
+            "concise": true,
+            "has_structure": false,
+            "has_takeaway": false,
+            "is_decision": false,
+            "char_count": 1407,
+            "agent": "[\ud83e\uddea Applied Scientist Advisor]"
+          },
+          {
+            "sentences": 7,
+            "concise": false,
+            "has_structure": false,
+            "has_takeaway": false,
+            "is_decision": false,
+            "char_count": 1160,
+            "agent": "[\ud83c\udfaf Business Objectives Clarifier]"
+          }
+        ]
+      },
+      {
+        "id": "Q2",
+        "label": "Conversational acknowledgement",
+        "expected": "smart_route",
+        "agent": "[Round Table]",
+        "is_fallback": false,
+        "elapsed_s": 9.3,
+        "response_count": 3,
+        "responses": [
+          {
+            "sentences": 6,
+            "concise": true,
+            "has_structure": false,
+            "has_takeaway": true,
+            "is_decision": false,
+            "char_count": 1288,
+            "agent": "[\ud83d\udcdd AI Requirements Writer]"
+          },
+          {
+            "sentences": 6,
+            "concise": true,
+            "has_structure": false,
+            "has_takeaway": false,
+            "is_decision": false,
+            "char_count": 1543,
+            "agent": "[\ud83e\uddea Applied Scientist Advisor]"
+          },
+          {
+            "sentences": 6,
+            "concise": true,
+            "has_structure": false,
+            "has_takeaway": false,
+            "is_decision": false,
+            "char_count": 1192,
+            "agent": "[\ud83c\udfaf Business Objectives Clarifier]"
+          }
+        ]
+      },
+      {
+        "id": "Q3",
+        "label": "Specific question",
+        "expected": "smart_route",
+        "agent": "[\ud83d\udcdd AI Requirements Writer]",
+        "is_fallback": false,
+        "elapsed_s": 4.0,
+        "response_count": 1,
+        "responses": [
+          {
+            "sentences": 6,
+            "concise": true,
+            "has_structure": false,
+            "has_takeaway": true,
+            "is_decision": false,
+            "char_count": 1289,
+            "agent": "[\ud83d\udcdd AI Requirements Writer]"
+          }
+        ]
+      },
+      {
+        "id": "Q4",
+        "label": "@mention single agent",
+        "expected": "single_route",
+        "agent": "[\ud83e\uddea Applied Scientist Advisor]",
+        "is_fallback": false,
+        "elapsed_s": 3.4,
+        "response_count": 1,
+        "responses": [
+          {
+            "sentences": 6,
+            "concise": true,
+            "has_structure": false,
+            "has_takeaway": true,
+            "is_decision": false,
+            "char_count": 1366,
+            "agent": "[\ud83e\uddea Applied Scientist Advisor]"
+          }
+        ]
+      },
+      {
+        "id": "Q5",
+        "label": "Follow-up with context",
+        "expected": "smart_route",
+        "agent": "[Round Table]",
+        "is_fallback": false,
+        "elapsed_s": 5.9,
+        "response_count": 2,
+        "responses": [
+          {
+            "sentences": 5,
+            "concise": true,
+            "has_structure": false,
+            "has_takeaway": true,
+            "is_decision": false,
+            "char_count": 1113,
+            "agent": "[\ud83e\uddea Applied Scientist Advisor]"
+          },
+          {
+            "sentences": 6,
+            "concise": true,
+            "has_structure": false,
+            "has_takeaway": true,
+            "is_decision": false,
+            "char_count": 1073,
+            "agent": "[\ud83c\udfaf Business Objectives Clarifier]"
+          }
+        ]
+      },
+      {
+        "id": "Q6",
+        "label": "Short conversational turn",
+        "expected": "smart_route",
+        "agent": "[Round Table]",
+        "is_fallback": false,
+        "elapsed_s": 6.7,
+        "response_count": 3,
+        "responses": [
+          {
+            "sentences": 6,
+            "concise": true,
+            "has_structure": false,
+            "has_takeaway": true,
+            "is_decision": false,
+            "char_count": 1152,
+            "agent": "[\ud83d\udcdd AI Requirements Writer]"
+          },
+          {
+            "sentences": 5,
+            "concise": true,
+            "has_structure": false,
+            "has_takeaway": true,
+            "is_decision": true,
+            "char_count": 996,
+            "agent": "[\ud83e\uddea Applied Scientist Advisor]"
+          },
+          {
+            "sentences": 5,
+            "concise": true,
+            "has_structure": false,
+            "has_takeaway": true,
+            "is_decision": true,
+            "char_count": 1022,
+            "agent": "[\ud83c\udfaf Business Objectives Clarifier]"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-02-28T19:02:46.637307+00:00",
+    "workroom": "[Test ROOM 3] Denial Intelligence Model Requirement",
+    "agents": [
+      "ai_req_writer",
+      "science_advisor",
+      "biz_clarifier"
+    ],
+    "scorecard": {
+      "tests_run": 6,
+      "total_responses": 13,
+      "fallback_hits": 0,
+      "conciseness_pass": 8,
+      "conciseness_total": 13,
+      "conciseness_pct": 62,
+      "no_structure_pass": 13,
+      "no_structure_total": 13,
+      "no_structure_pct": 100,
+      "takeaway_pass": 8,
+      "takeaway_total": 13,
+      "takeaway_pct": 62,
+      "decision_count": 0,
+      "total_time_s": 41.6,
+      "avg_time_s": 6.9
+    },
+    "thresholds": {
+      "routing_fallback_max": 0,
+      "conciseness_min_pct": 60,
+      "no_structure_min_pct": 80,
+      "decision_max": 3
+    },
+    "checks": {
+      "routing": true,
+      "conciseness": true,
+      "no_structure": true,
+      "decision_detection": true
+    },
+    "overall_pass": true,
+    "questions": [
+      {
+        "id": "Q1",
+        "label": "Open-ended kick-off",
+        "expected": "round_table",
+        "agent": "[Round Table]",
+        "is_fallback": false,
+        "elapsed_s": 21.2,
+        "response_count": 3,
+        "responses": [
+          {
+            "sentences": 8,
+            "concise": false,
+            "has_structure": false,
+            "has_takeaway": false,
+            "is_decision": false,
+            "char_count": 1398,
+            "agent": "[\ud83d\udcdd AI Requirements Writer]"
+          },
+          {
+            "sentences": 6,
+            "concise": true,
+            "has_structure": false,
+            "has_takeaway": false,
+            "is_decision": false,
+            "char_count": 1270,
+            "agent": "[\ud83e\uddea Applied Scientist Advisor]"
+          },
+          {
+            "sentences": 6,
+            "concise": true,
+            "has_structure": false,
+            "has_takeaway": true,
+            "is_decision": false,
+            "char_count": 1212,
+            "agent": "[\ud83c\udfaf Business Objectives Clarifier]"
+          }
+        ]
+      },
+      {
+        "id": "Q2",
+        "label": "Conversational acknowledgement",
+        "expected": "smart_route",
+        "agent": "[Round Table]",
+        "is_fallback": false,
+        "elapsed_s": 3.3,
+        "response_count": 3,
+        "responses": [
+          {
+            "sentences": 8,
+            "concise": false,
+            "has_structure": false,
+            "has_takeaway": true,
+            "is_decision": false,
+            "char_count": 1750,
+            "agent": "[\ud83d\udcdd AI Requirements Writer]"
+          },
+          {
+            "sentences": 7,
+            "concise": false,
+            "has_structure": false,
+            "has_takeaway": true,
+            "is_decision": false,
+            "char_count": 1453,
+            "agent": "[\ud83e\uddea Applied Scientist Advisor]"
+          },
+          {
+            "sentences": 7,
+            "concise": false,
+            "has_structure": false,
+            "has_takeaway": false,
+            "is_decision": false,
+            "char_count": 1499,
+            "agent": "[\ud83c\udfaf Business Objectives Clarifier]"
+          }
+        ]
+      },
+      {
+        "id": "Q3",
+        "label": "Specific question",
+        "expected": "smart_route",
+        "agent": "[\ud83e\uddea Applied Scientist Advisor]",
+        "is_fallback": false,
+        "elapsed_s": 5.1,
+        "response_count": 1,
+        "responses": [
+          {
+            "sentences": 6,
+            "concise": true,
+            "has_structure": false,
+            "has_takeaway": true,
+            "is_decision": false,
+            "char_count": 1406,
+            "agent": "[\ud83e\uddea Applied Scientist Advisor]"
+          }
+        ]
+      },
+      {
+        "id": "Q4",
+        "label": "@mention single agent",
+        "expected": "single_route",
+        "agent": "[\ud83e\uddea Applied Scientist Advisor]",
+        "is_fallback": false,
+        "elapsed_s": 3.6,
+        "response_count": 1,
+        "responses": [
+          {
+            "sentences": 7,
+            "concise": false,
+            "has_structure": false,
+            "has_takeaway": true,
+            "is_decision": false,
+            "char_count": 1292,
+            "agent": "[\ud83e\uddea Applied Scientist Advisor]"
+          }
+        ]
+      },
+      {
+        "id": "Q5",
+        "label": "Follow-up with context",
+        "expected": "smart_route",
+        "agent": "[Round Table]",
+        "is_fallback": false,
+        "elapsed_s": 4.4,
+        "response_count": 2,
+        "responses": [
+          {
+            "sentences": 5,
+            "concise": true,
+            "has_structure": false,
+            "has_takeaway": false,
+            "is_decision": false,
+            "char_count": 1095,
+            "agent": "[\ud83c\udfaf Business Objectives Clarifier]"
+          },
+          {
+            "sentences": 6,
+            "concise": true,
+            "has_structure": false,
+            "has_takeaway": true,
+            "is_decision": false,
+            "char_count": 1338,
+            "agent": "[\ud83e\uddea Applied Scientist Advisor]"
+          }
+        ]
+      },
+      {
+        "id": "Q6",
+        "label": "Short conversational turn",
+        "expected": "smart_route",
+        "agent": "[Round Table]",
+        "is_fallback": false,
+        "elapsed_s": 3.9,
+        "response_count": 3,
+        "responses": [
+          {
+            "sentences": 5,
+            "concise": true,
+            "has_structure": false,
+            "has_takeaway": false,
+            "is_decision": false,
+            "char_count": 1449,
+            "agent": "[\ud83d\udcdd AI Requirements Writer]"
+          },
+          {
+            "sentences": 6,
+            "concise": true,
+            "has_structure": false,
+            "has_takeaway": true,
+            "is_decision": false,
+            "char_count": 1181,
+            "agent": "[\ud83e\uddea Applied Scientist Advisor]"
+          },
+          {
+            "sentences": 5,
+            "concise": true,
+            "has_structure": false,
+            "has_takeaway": true,
+            "is_decision": false,
+            "char_count": 1054,
+            "agent": "[\ud83c\udfaf Business Objectives Clarifier]"
+          }
+        ]
+      }
+    ]
+  }
+]

@@ -96,7 +96,7 @@ DECISION_KEYWORDS_WEAK = [
 ]
 
 # Minimum length for decision detection — short advisory sentences are not decisions
-_DECISION_MIN_LENGTH = 80
+_DECISION_MIN_LENGTH = 120
 
 # @mention → agent key map
 MENTION_MAP = {
@@ -156,9 +156,9 @@ def _is_decision(text: str) -> bool:
     # Strong match — a single hit is enough
     if any(re.search(p, text_lower) for p in DECISION_KEYWORDS_STRONG):
         return True
-    # Weak match — require at least 2 different weak patterns
+    # Weak match — require at least 3 different weak patterns
     weak_hits = sum(1 for p in DECISION_KEYWORDS_WEAK if re.search(p, text_lower))
-    return weak_hits >= 2
+    return weak_hits >= 3
 
 
 # ------------------------------------------------------------------ #
@@ -750,7 +750,7 @@ class Orchestrator:
         return result
 
     # ------------------------------------------------------------------ #
-    # Round Table — every active agent responds in sequence              #
+    # Round Table — every active agent responds in parallel              #
     # ------------------------------------------------------------------ #
 
     def round_table(
@@ -762,10 +762,10 @@ class Orchestrator:
         workroom: Optional[WorkroomSession] = None,
     ) -> dict:
         """
-        Ask every active agent to respond to the same message in sequence.
+        Ask every active agent to respond to the same message in parallel.
 
-        To reduce overlap, each agent receives a summary of prior agent
-        responses in the same round so they can differentiate their input.
+        All agents receive shared conversation history and document context.
+        Responses are collected via ThreadPoolExecutor for lower latency.
 
         Returns:
             {
@@ -777,69 +777,73 @@ class Orchestrator:
               ...
             }
         """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import logging
+
+        logger = logging.getLogger(__name__)
+
         # Determine which agents to call
         all_builtin = ["facilitator"]
-        # Get custom agents too
         custom_keys = [ca.key for ca in self.storage.list_custom_agents()]
 
         if active_agents:
-            # Use the caller's active list, but keep ordering consistent
             ordered = [k for k in all_builtin if k in active_agents]
             ordered += [k for k in active_agents if k not in all_builtin]
         else:
             ordered = all_builtin
 
-        responses: list[dict] = []
-        # Track prior agent summaries for overlap reduction
-        prior_summaries: list[str] = []
-
-        for key in ordered:
+        def _call_agent(key: str) -> dict:
+            """Call a single agent with retry logic. Runs in a thread."""
             try:
-                # Inject prior agent responses into conversation history
-                # so the current agent can differentiate its contribution
-                augmented_history = list(conversation_history or [])
-                if prior_summaries and workroom:
-                    prior_block = "\n".join(prior_summaries)
-                    augmented_history.append({
-                        "role": "assistant",
-                        "content": (
-                            f"[Other agents in this round already said:]\n{prior_block}\n\n"
-                            "[Your turn — add NEW points only. Do not repeat what was already covered.]"
-                        ),
-                    })
-
                 result = self._route_by_key(
-                    key, message, augmented_history, document_context,
-                    active_agents, workroom=workroom
+                    key, message, list(conversation_history or []),
+                    document_context, active_agents, workroom=workroom,
                 )
-                label = result.get("agent", f"[{key.capitalize()}]")
-                text = result.get("text", "")
-                responses.append({"agent": label, "text": text})
-
-                # Build a compact summary of this agent's response for the next agent
-                if workroom and text:
-                    # Truncate to keep context manageable
-                    summary_line = f"- {label}: {text[:200]}{'...' if len(text) > 200 else ''}"
-                    prior_summaries.append(summary_line)
-
-                # Auto-detect decisions in each response
-                if workroom and _is_decision(text):
-                    decision = Decision(content=text[:300], context=message[:200])
-                    self.storage.add_workroom_decision(workroom.id, decision)
+                return {
+                    "key": key,
+                    "agent": result.get("agent", f"[{key.capitalize()}]"),
+                    "text": result.get("text", ""),
+                }
             except Exception as e:
-                # Retry once on connection errors before giving up
+                logger.warning("Round table agent %s failed (%s), retrying...", key, e)
                 import time
-                import logging
-                logging.getLogger(__name__).warning("Round table agent %s failed (%s), retrying...", key, e)
                 time.sleep(2)
                 try:
-                    result = self._route_by_key(key, message, conversation_history, document_context, active_agents, workroom=workroom)
-                    label = result.get("agent", f"[{key.capitalize()}]")
-                    text = result.get("text", "")
-                    responses.append({"agent": label, "text": text})
+                    result = self._route_by_key(
+                        key, message, list(conversation_history or []),
+                        document_context, active_agents, workroom=workroom,
+                    )
+                    return {
+                        "key": key,
+                        "agent": result.get("agent", f"[{key.capitalize()}]"),
+                        "text": result.get("text", ""),
+                    }
                 except Exception as e2:
-                    logging.getLogger(__name__).exception("Round table agent %s retry also failed: %s", key, e2)
-                    responses.append({"agent": f"[{key.capitalize()}]", "text": "_(Temporarily unavailable. Please resend your message to try again.)_"})
+                    logger.exception("Round table agent %s retry also failed: %s", key, e2)
+                    return {
+                        "key": key,
+                        "agent": f"[{key.capitalize()}]",
+                        "text": "_(Temporarily unavailable. Please resend your message to try again.)_",
+                    }
+
+        # Fire all agents in parallel
+        results_by_key: dict[str, dict] = {}
+        with ThreadPoolExecutor(max_workers=len(ordered)) as pool:
+            futures = {pool.submit(_call_agent, key): key for key in ordered}
+            for future in as_completed(futures):
+                result = future.result()
+                results_by_key[result["key"]] = result
+
+        # Reassemble in original order
+        responses: list[dict] = []
+        for key in ordered:
+            r = results_by_key.get(key)
+            if r:
+                responses.append({"agent": r["agent"], "text": r["text"]})
+                # Auto-detect decisions
+                if workroom and _is_decision(r["text"]):
+                    decision = Decision(content=r["text"][:300], context=message[:200])
+                    self.storage.add_workroom_decision(workroom.id, decision)
 
         # Build combined markdown for the "text" field
         parts = []
