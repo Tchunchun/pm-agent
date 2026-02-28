@@ -19,9 +19,7 @@ Does NOT:
 import json
 from datetime import datetime, timezone
 
-from openai import OpenAI
-
-from config import MODEL, OPENAI_API_KEY, MIN_REQUESTS_FOR_ANALYSIS
+from config import MODEL, make_openai_client, MIN_REQUESTS_FOR_ANALYSIS
 from models import StrategicInsight
 from storage import StorageManager
 
@@ -173,7 +171,7 @@ def _format_insights(insights) -> str:
 class AnalystAgent:
     def __init__(self, storage: StorageManager):
         self.storage = storage
-        self.client = OpenAI(api_key=OPENAI_API_KEY)
+        self.client = make_openai_client()
 
     def _call_claude(self, user_content: str) -> str:
         response = self.client.chat.completions.create(

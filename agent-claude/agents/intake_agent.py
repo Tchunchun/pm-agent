@@ -16,9 +16,7 @@ Does NOT:
 import json
 from typing import Optional
 
-from openai import OpenAI
-
-from config import MODEL, OPENAI_API_KEY
+from config import MODEL, make_openai_client
 from models import CustomerRequest, DayPlan
 from storage import StorageManager
 from utils import parse_file
@@ -97,18 +95,23 @@ If there are no identifiable requests, return an empty array: []"""
 class IntakeAgent:
     def __init__(self, storage: StorageManager):
         self.storage = storage
-        self.client = OpenAI(api_key=OPENAI_API_KEY)
+        self.client = make_openai_client()
 
     def _call_claude(self, user_content: str, max_tokens: int = 2048) -> str:
-        response = self.client.chat.completions.create(
-            model=MODEL,
-            max_tokens=max_tokens,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_content},
-            ],
-        )
-        return response.choices[0].message.content.strip()
+        try:
+            response = self.client.chat.completions.create(
+                model=MODEL,
+                max_tokens=max_tokens,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_content},
+                ],
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).exception("IntakeAgent API error: %s", exc)
+            raise RuntimeError(f"Intake agent connection error: {exc}") from exc
 
     def _parse_json(self, text: str) -> dict | list:
         """Robustly parse JSON from Claude response."""

@@ -105,6 +105,7 @@ html, body, [data-testid="stAppViewContainer"],
 /* Constrain chat input to match the left chat column width (75% of 3:1 split) */
 [data-testid="stChatInput"] {
   max-width: 75% !important;
+  margin-top: -0.5rem !important;
 }
 
 [data-testid="stChatInput"] textarea {

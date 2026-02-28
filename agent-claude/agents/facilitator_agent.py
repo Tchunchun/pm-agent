@@ -8,8 +8,7 @@ Responsibilities:
 """
 
 import logging
-from openai import OpenAI
-from config import OPENAI_API_KEY, MODEL
+from config import MODEL, make_openai_client
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +26,7 @@ Your role:
 
 class FacilitatorAgent:
     def __init__(self):
-        self.client = OpenAI(api_key=OPENAI_API_KEY)
+        self.client = make_openai_client()
 
     # ------------------------------------------------------------------ #
     # Opening message                                                      #
@@ -67,7 +66,7 @@ Keep the total length under 200 words."""
         try:
             response = self.client.chat.completions.create(
                 model=MODEL,
-                max_tokens=500,
+                max_tokens=700,
                 temperature=0.5,
                 messages=[
                     {"role": "system", "content": FACILITATOR_SYSTEM},
@@ -128,7 +127,7 @@ Use markdown formatting."""
         try:
             response = self.client.chat.completions.create(
                 model=MODEL,
-                max_tokens=400,
+                max_tokens=600,
                 temperature=0.3,
                 messages=[
                     {"role": "system", "content": FACILITATOR_SYSTEM},

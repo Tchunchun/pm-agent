@@ -113,6 +113,25 @@ Each entry is appended after an approved plan, before execution (status: Pending
 
 **Status:** Executed
 
+## 2026-02-27 — Agent Hub Cleanup + Prompt Divergence Fix
+
+**Decision:**
+1. Remove `intake`, `analyst`, `researcher`, and `writer` from `default_agents.py` (and therefore from Agent Hub). These agents remain fully functional for solo chat via their Python files and the Orchestrator — they are just no longer selectable for workrooms.
+2. Fix prompt divergence: `planner` and `challenger` system prompts in `default_agents.py` (used by `CustomAgentRunner` in workrooms) were lighter than their Python counterparts. Enriched both for conversational workroom use.
+
+**Changes to planner prompt:** Removed `"Return valid JSON only"` (only valid for programmatic `build_day_plan()`); added conversational mode guidance; strengthened "WHY" framing to require naming the customer/deadline/consequence; added concrete next-action requirement.
+
+**Changes to challenger prompt:** Synced richer "Evidence against" instruction (first-principles fallback when no data); added detail to Blind spots; added **Alternative path** as fifth structural element; added persona voice guard against hedging.
+
+**Rationale:** When agents are added to a Workroom, `CustomAgentRunner` uses the `default_agents.py` system prompt exclusively — Python agent files are bypassed. Without this fix, a Planner in a workroom produced rigid JSON or shallow advice because its prompt lacked the full ranking intelligence.
+
+**Scope:**
+- Modified: `agents/default_agents.py` — removed intake, analyst, researcher, writer; enriched planner + challenger; PM Workflow now has 3 agents; total: 11 default agents
+
+**Status:** Executed
+
+---
+
 ## 2026-02-27 — Explore Experts: Problem-First Agent Discovery in Agent Hub
 
 **Decision:** Add an "Explore Experts" primary entry point to Agent Hub. Instead of manually defining an agent, users describe a problem or challenge and the system identifies the required domain expertise, explains the reasoning (WHY), and proposes 3–5 specialist agents with full system prompts for review and one-click saving to the library.
@@ -138,6 +157,35 @@ Each entry is appended after an approved plan, before execution (status: Pending
 - Modified: `storage/manager.py` — added category sync block in `ensure_default_agents()` to migrate stored default categories on startup
 - Modified: `app.py` — new `_CATEGORY_META` (4 keys), `_CATEGORY_ALIAS` (professional→pm_workflow), updated `_category_badge()`, replaced 3 hardcoded sections with dynamic grouping, updated "Create Manually" form with 5-option selectbox + custom text input for "other"
 - Modified: `agents/agent_designer.py` — system prompt updated with new category vocabulary
+
+**Status:** Executed
+
+---
+
+## 2026-02-28 — Skills Framework: Agent Tool-Use Infrastructure
+
+**Decision:** Build a skills framework that allows agents to invoke external tools (functions) via OpenAI function-calling. The framework is infrastructure-first — 3 built-in placeholder skills shipped now; actual skill extensions deferred to later sessions.
+
+**Rationale:** Agents are currently pure system-prompt wrappers: they can only reason from what's already in their context window. A skills framework enables agents to actively retrieve live data (backlog, insights, calendar, etc.) mid-conversation. The factory pattern (Skill base class + SkillRegistry singleton + bootstrap function) means new skills can be added in one file with zero changes to the runner.
+
+**Scope:**
+- Created: `skills/__init__.py`, `skills/base.py`, `skills/registry.py`, `skills/bootstrap.py`
+- Created: `skills/builtin/__init__.py`, `skills/builtin/get_date.py`, `skills/builtin/search_backlog.py`, `skills/builtin/get_insights.py`
+- Modified: `models/workroom.py` — added `skill_names: list[str]` field to `CustomAgent` (default `[]`, backward-compatible)
+- Modified: `agents/custom_agent_runner.py` — full tool-call loop (MAX_TOOL_ROUNDS=5), executes tool calls via SkillRegistry, falls back gracefully if skills package unavailable
+- Modified: `app.py` — added `bootstrap_skills` import; call `bootstrap_skills(storage=...)` once after StorageManager is created in `_init_state()`
+
+**Built-in skills:**
+| Skill name | Class | Needs storage? | What it does |
+|---|---|---|---|
+| `get_current_date` | `GetCurrentDateSkill` | No | Returns today's UTC date |
+| `search_backlog` | `SearchBacklogSkill` | Yes | Keyword search across CustomerRequests |
+| `get_recent_insights` | `GetInsightsSkill` | Yes | Returns N most recent StrategicInsights |
+
+**How to assign skills to an agent:**
+```python
+CustomAgent(key="my_agent", ..., skill_names=["get_current_date", "search_backlog"])
+```
 
 **Status:** Executed
 

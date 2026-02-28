@@ -21,9 +21,7 @@ Does NOT:
 
 import json
 
-from openai import OpenAI
-
-from config import MODEL, OPENAI_API_KEY
+from config import MODEL, make_openai_client
 from storage import StorageManager
 
 
@@ -73,7 +71,7 @@ def _format_insights(insights) -> str:
 class ChallengerAgent:
     def __init__(self, storage: StorageManager):
         self.storage = storage
-        self.client = OpenAI(api_key=OPENAI_API_KEY)
+        self.client = make_openai_client()
 
     def challenge(
         self,
@@ -134,9 +132,14 @@ class ChallengerAgent:
             ),
         })
 
-        response = self.client.chat.completions.create(
-            model=MODEL,
-            max_tokens=800 if concise else 1500,
-            messages=messages,
-        )
-        return response.choices[0].message.content.strip()
+        try:
+            response = self.client.chat.completions.create(
+                model=MODEL,
+                max_tokens=1200 if concise else 2000,
+                messages=messages,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).exception("ChallengerAgent API error: %s", exc)
+            return "_(Challenger is temporarily unavailable due to a connection issue. Please try again.)_"

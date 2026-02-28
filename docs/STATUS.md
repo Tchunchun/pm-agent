@@ -62,6 +62,8 @@ Living tracker — updated after every execution. Cross-referenced with `docs/DE
 | Conversational Agent Mode | ✅ Done | Agents give concise 3-6 sentence responses in workrooms; wider history window for multi-turn follow-ups | 2026-02-27 |
 | Explore Experts (Agent Hub) | ✅ Done | Problem-first agent discovery: describe challenge → LLM proposes domain experts with reasoning → review + save to library | 2026-02-27 |
 | Agent Category Overhaul | ✅ Done | 4-category system (pm_workflow/ai_product/career/life) + dynamic sections; category sync migration; manual create form updated | 2026-02-27 |
+| Agent Hub Cleanup + Prompt Divergence Fix | ✅ Done | Removed intake/analyst/researcher/writer from Agent Hub (solo-chat only); planner + challenger system prompts enriched for workroom conversational use | 2026-02-27 |
+| Skills Framework | ✅ Done | `skills/` package: Skill base class, SkillRegistry singleton, bootstrap; 3 built-in skills (get_current_date, search_backlog, get_recent_insights); CustomAgent.skill_names field; CustomAgentRunner tool-call loop | 2026-02-28 |
 
 ---
 
