@@ -11,8 +11,7 @@ of available agents, it calls OpenAI once and returns:
 
 import json
 import logging
-from openai import OpenAI
-from config import OPENAI_API_KEY, MODEL
+from config import MODEL, make_openai_client
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +38,7 @@ Output format:
 
 class TopicClassifier:
     def __init__(self):
-        self.client = OpenAI(api_key=OPENAI_API_KEY)
+        self.client = make_openai_client()
 
     def classify(
         self,

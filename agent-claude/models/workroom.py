@@ -68,6 +68,10 @@ class CustomAgent(BaseModel):
     system_prompt: str
     category: str = ""         # "professional", "life", or "" for user-created
     is_default: bool = False   # True for pre-built agents shipped with the app
+    # Skills this agent can invoke via OpenAI function-calling.
+    # Each entry is a registered skill name (e.g. "get_current_date").
+    # Empty list = no tool-use (default, backward-compatible).
+    skill_names: list[str] = Field(default_factory=list)
     created_at: str = Field(default_factory=_now)
 
 

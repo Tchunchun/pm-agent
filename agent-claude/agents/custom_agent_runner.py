@@ -1,16 +1,33 @@
 """
 CustomAgentRunner — executes user-defined agents with their own system prompt.
+
+Supports optional skill/tool-use: if the agent's CustomAgent definition
+includes skill_names, those skills are looked up in the global SkillRegistry
+and passed to the LLM as OpenAI function-calling tools.
+
+Tool-call loop (up to MAX_TOOL_ROUNDS):
+  1. Call LLM with tools=[...]
+  2. If finish_reason == "tool_calls" → execute each tool, append results,
+     loop back to step 1.
+  3. Otherwise → return the text response.
 """
 
-from openai import OpenAI
-from config import MODEL, OPENAI_API_KEY
+import json
+import logging
+
+from config import MODEL, make_openai_client
 from models.workroom import CustomAgent
+
+logger = logging.getLogger(__name__)
+
+# Safety cap: prevent infinite tool-call loops
+MAX_TOOL_ROUNDS = 5
 
 
 class CustomAgentRunner:
     def __init__(self, agent_def: CustomAgent):
         self.agent_def = agent_def
-        self.client = OpenAI(api_key=OPENAI_API_KEY)
+        self.client = make_openai_client()
 
     def respond(
         self,
@@ -20,12 +37,16 @@ class CustomAgentRunner:
         concise: bool = False,
         doc_context: str = "",
     ) -> str:
-        # Build system prompt — append document-awareness note when a doc is active
+        # ------------------------------------------------------------------ #
+        # Build system prompt                                                 #
+        # ------------------------------------------------------------------ #
         system_prompt = self.agent_def.system_prompt
         if concise:
             system_prompt += (
-                "\n\nIMPORTANT: You are in a live workroom discussion. "
-                "Respond in 3-5 sentences (hard max 6). Lead with your key insight or recommendation. "
+                "\n\nCRITICAL CONSTRAINT — You are in a live workroom discussion. "
+                "You MUST respond in 3-5 sentences (absolute hard max 6 sentences). "
+                "Do NOT use headers, bullet lists, numbered lists, or multi-section formatting. "
+                "Write in flowing prose paragraphs only. "
                 "Cite specific facts from the document context — don't ask questions the doc already answers. "
                 "You'll get follow-up turns — don't try to cover everything now. "
                 "End with → your single most important takeaway, question, or recommendation."
@@ -42,6 +63,9 @@ class CustomAgentRunner:
                 "you cannot access the file. Read the embedded text and use it to answer."
             )
 
+        # ------------------------------------------------------------------ #
+        # Build message history                                               #
+        # ------------------------------------------------------------------ #
         messages = [{"role": "system", "content": system_prompt}]
 
         history_window = 12 if concise else 8
@@ -67,9 +91,98 @@ class CustomAgentRunner:
 
         messages.append({"role": "user", "content": user_content})
 
-        response = self.client.chat.completions.create(
-            model=MODEL,
-            max_tokens=800 if concise else 1500,
-            messages=messages,
-        )
-        return response.choices[0].message.content.strip()
+        # ------------------------------------------------------------------ #
+        # Resolve skills / tools                                              #
+        # ------------------------------------------------------------------ #
+        tools: list[dict] = []
+        if self.agent_def.skill_names:
+            try:
+                from skills.registry import registry as skill_registry
+                tools = skill_registry.to_openai_tools(self.agent_def.skill_names)
+            except ImportError:
+                logger.warning("CustomAgentRunner: skills package not available")
+
+        # ------------------------------------------------------------------ #
+        # LLM call — with optional tool-call loop                            #
+        # ------------------------------------------------------------------ #
+        try:
+            for _round in range(MAX_TOOL_ROUNDS):
+                call_kwargs: dict = {
+                    "model": MODEL,
+                    "max_tokens": 500 if concise else 2000,
+                    "messages": messages,
+                }
+                if tools:
+                    call_kwargs["tools"] = tools
+                    call_kwargs["tool_choice"] = "auto"
+
+                response = self.client.chat.completions.create(**call_kwargs)
+                choice = response.choices[0]
+
+                # ---- tool_calls: execute each tool and loop ----
+                if choice.finish_reason == "tool_calls" and choice.message.tool_calls:
+                    # Append assistant turn (including tool_calls metadata)
+                    assistant_msg: dict = {
+                        "role": "assistant",
+                        "content": choice.message.content or "",
+                        "tool_calls": [
+                            {
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.function.name,
+                                    "arguments": tc.function.arguments,
+                                },
+                            }
+                            for tc in choice.message.tool_calls
+                        ],
+                    }
+                    messages.append(assistant_msg)
+
+                    # Execute each tool call and append results
+                    try:
+                        from skills.registry import registry as skill_registry
+                    except ImportError:
+                        skill_registry = None
+
+                    for tc in choice.message.tool_calls:
+                        fn_name = tc.function.name
+                        try:
+                            fn_args = json.loads(tc.function.arguments)
+                        except json.JSONDecodeError:
+                            fn_args = {}
+
+                        if skill_registry:
+                            result = skill_registry.execute(fn_name, **fn_args)
+                        else:
+                            result = f"[Skill '{fn_name}' could not be executed: registry unavailable]"
+
+                        logger.debug(
+                            "CustomAgentRunner: tool '%s'(%s) → %s",
+                            fn_name, fn_args, result[:120],
+                        )
+
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": result,
+                        })
+                    # Continue loop — LLM will now see tool results
+                    continue
+
+                # ---- normal response ----
+                return (choice.message.content or "").strip()
+
+            # Exceeded MAX_TOOL_ROUNDS — return whatever the last response was
+            logger.warning(
+                "CustomAgentRunner: exceeded %d tool rounds for agent '%s'",
+                MAX_TOOL_ROUNDS, self.agent_def.key,
+            )
+            return (choice.message.content or "").strip()  # type: ignore[possibly-undefined]
+
+        except Exception as exc:
+            logger.exception("CustomAgentRunner API error: %s", exc)
+            return (
+                f"_({self.agent_def.label} is temporarily unavailable due to a "
+                "connection issue. Please try again.)_"
+            )

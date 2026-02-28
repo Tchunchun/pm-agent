@@ -21,8 +21,7 @@ Falls back to {"reasoning": "", "agents": []} on any error.
 
 import json
 import logging
-from openai import OpenAI
-from config import OPENAI_API_KEY, MODEL
+from config import MODEL, make_openai_client
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +58,7 @@ Output format:
 
 class AgentDesigner:
     def __init__(self):
-        self.client = OpenAI(api_key=OPENAI_API_KEY)
+        self.client = make_openai_client()
 
     def design(self, problem: str) -> dict:
         """

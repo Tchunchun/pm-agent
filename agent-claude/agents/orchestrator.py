@@ -21,9 +21,9 @@ Routing table:
 import re
 from typing import Optional
 
-from openai import OpenAI
+from openai import OpenAI  # kept for type hints only
 
-from config import MODEL, OPENAI_API_KEY
+from config import MODEL, OPENAI_API_KEY, make_openai_client
 from storage import StorageManager
 from agents.intake_agent import IntakeAgent
 from agents.planner_agent import PlannerAgent
@@ -37,14 +37,15 @@ from models.workroom import CustomAgent, WorkroomSession, Decision, GeneratedOut
 
 
 CONVERSATIONAL_MODE = (
-    "You are in a live workroom discussion helping a TPM achieve their meeting goal. "
-    "Respond directly and concisely (3-5 sentences, hard max 6). "
+    "CRITICAL CONSTRAINT — You are in a live workroom discussion. "
+    "You MUST respond in 3-5 sentences (absolute hard max 6 sentences). "
+    "Do NOT use headers, bullet lists, numbered lists, or multi-section formatting. "
+    "Write in flowing prose paragraphs only. "
     "Lead with your key insight, recommendation, or answer. "
     "Add supporting reasoning only when it's non-obvious. "
     "You will get follow-up turns — do NOT try to cover everything in one response. "
     "If the user answers a question you asked, acknowledge it and build on it. "
     "If you need more information, ask ONE focused follow-up question. "
-    "Do not use headers or bullet lists unless specifically asked. "
     "Stay in your expert role — don't water down your expertise, just communicate it efficiently. "
     "End with your single most important takeaway: a recommendation, risk, or question for the group, prefixed with '→'."
 )
@@ -82,18 +83,26 @@ Rules:
 Return only the document content in markdown. No preamble like "Here is the document:".
 """
 
-DECISION_KEYWORDS = [
-    r"\bwe('ll| will| should| are going to)\b",
-    r"\bdecided\b",
-    r"\bdecision\b",
-    r"\baction\s+item\b",
-    r"\btake\s+away\b",
-    r"\bnext\s+step\b",
-    r"\bwe\s+(need|must|have)\s+to\b",
-    r"\blet'?s\s+(go\s+with|use|build|ship|prioritis|prioritiz)\b",
-    r"\bagreed\b",
-    r"\bcommit(ment|ted|ting)?\b",
+DECISION_KEYWORDS_STRONG = [
+    r"\bdecided\s+(to|that|on)\b",
+    r"\bwe('ll| will)\s+(go\s+with|ship|build|use|adopt|implement|proceed)\b",
+    r"\blet'?s\s+(go\s+with|use|build|ship|adopt|commit)\b",
+    r"\bagreed\s+(to|that|on)\b",
+    r"\baction\s+item\s*:",
+    r"\bdecision\s*:",
+    r"\bcommitted\s+to\b",
 ]
+
+DECISION_KEYWORDS_WEAK = [
+    r"\bwe\s+should\b",
+    r"\bwe\s+(need|must|have)\s+to\b",
+    r"\bnext\s+step\b",
+    r"\btake\s+away\b",
+    r"\bcommitment\b",
+]
+
+# Minimum length for decision detection — short advisory sentences are not decisions
+_DECISION_MIN_LENGTH = 80
 
 # @mention → agent key map
 MENTION_MAP = {
@@ -142,9 +151,23 @@ def _detect_mentions(message: str, active_agents: Optional[list] = None, all_kno
 
 
 def _is_decision(text: str) -> bool:
-    """Heuristic: does this text contain a decision or commitment?"""
+    """Heuristic: does this text contain a real decision or commitment?
+
+    Uses two tiers:
+      - Strong keywords (decided to, agreed on, let's go with) → immediate match
+      - Weak keywords (we should, next step) → require 2+ matches to trigger
+
+    Also enforces a minimum text length to avoid flagging short advisory lines.
+    """
+    if len(text) < _DECISION_MIN_LENGTH:
+        return False
     text_lower = text.lower()
-    return any(re.search(p, text_lower) for p in DECISION_KEYWORDS)
+    # Strong match — a single hit is enough
+    if any(re.search(p, text_lower) for p in DECISION_KEYWORDS_STRONG):
+        return True
+    # Weak match — require at least 2 different weak patterns
+    weak_hits = sum(1 for p in DECISION_KEYWORDS_WEAK if re.search(p, text_lower))
+    return weak_hits >= 2
 
 
 # ------------------------------------------------------------------ #
@@ -327,7 +350,7 @@ class Orchestrator:
         self.challenger = ChallengerAgent(storage)
         self.writer = WriterAgent(storage)
         self.researcher = ResearcherAgent(storage)
-        self._openai = OpenAI(api_key=OPENAI_API_KEY)
+        self._openai = make_openai_client()
         # Custom agent runners — loaded lazily from storage
         self._custom_runners: dict[str, CustomAgentRunner] = {}
 
@@ -363,27 +386,33 @@ class Orchestrator:
         # Use first 12K chars to produce the summary (cost-efficient)
         truncated = doc_text[:12000]
 
-        response = self._openai.chat.completions.create(
-            model=MODEL,
-            max_tokens=800,
-            temperature=0,
-            messages=[
-                {"role": "system", "content": (
-                    "You are a document summarizer for a TPM working session. "
-                    "Produce a structured summary that captures ALL key facts, "
-                    "requirements, numbers, names, and technical details. "
-                    "This summary will be the ONLY context agents see, so be thorough "
-                    "but concise. Use bullet points. Keep under 2000 chars."
-                )},
-                {"role": "user", "content": (
-                    f"Summarize this document: **{filename}**\n\n"
-                    f"---\n{truncated}\n---\n\n"
-                    "Include: key stakeholders, problem statement, requirements, "
-                    "data/technical details, open questions, and any specific asks."
-                )},
-            ],
-        )
-        summary = response.choices[0].message.content.strip()
+        try:
+            response = self._openai.chat.completions.create(
+                model=MODEL,
+                max_tokens=1200,
+                temperature=0,
+                messages=[
+                    {"role": "system", "content": (
+                        "You are a document summarizer for a TPM working session. "
+                        "Produce a structured summary that captures ALL key facts, "
+                        "requirements, numbers, names, and technical details. "
+                        "This summary will be the ONLY context agents see, so be thorough "
+                        "but concise. Use bullet points. Keep under 2000 chars."
+                    )},
+                    {"role": "user", "content": (
+                        f"Summarize this document: **{filename}**\n\n"
+                        f"---\n{truncated}\n---\n\n"
+                        "Include: key stakeholders, problem statement, requirements, "
+                        "data/technical details, open questions, and any specific asks."
+                    )},
+                ],
+            )
+            summary = response.choices[0].message.content.strip()
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).exception("Document summarization API error: %s", exc)
+            # Fallback: use raw truncated text as context
+            summary = f"[Summary unavailable — using raw excerpt]\n\n{truncated[:2000]}"
         self._doc_summary_cache[filename] = summary
         return summary
 
@@ -536,22 +565,11 @@ class Orchestrator:
         if intent == "list_plans":
             return self._handle_list_plans()
 
-        # ---- Document Q&A — answer from active document context ----
-        if document_context:
-            if workroom and active_agents:
-                # Smart route: pick best 1-2 agents instead of round-tabling everyone
-                return self.smart_route(
-                    message,
-                    active_agents=active_agents,
-                    conversation_history=conversation_history,
-                    document_context=document_context,
-                    workroom=workroom,
-                )
-            if not self._agent_allowed("intake", active_agents):
-                return self._agent_blocked("Intake", active_agents)
-            return self._handle_document_query(message, document_context, conversation_history)
-
-        # ---- Workroom: smart route to best agent(s) instead of round table ----
+        # ---- Workroom: smart route to best agent(s) ----
+        # This must come BEFORE the ambiguous fallback so that natural
+        # conversational messages ("good questions", "please continue",
+        # "thanks, what next?") are routed to agents instead of showing
+        # a static menu.
         if workroom and active_agents and len(active_agents) > 0:
             return self.smart_route(
                 message,
@@ -560,6 +578,12 @@ class Orchestrator:
                 document_context=document_context,
                 workroom=workroom,
             )
+
+        # ---- Document Q&A — answer from active document context ----
+        if document_context:
+            if not self._agent_allowed("intake", active_agents):
+                return self._agent_blocked("Intake", active_agents)
+            return self._handle_document_query(message, document_context, conversation_history)
 
         # Ambiguous — general chat fallback: show available agents
         active_list = active_agents or ["intake", "planner", "analyst", "challenger", "writer", "researcher"]
@@ -800,12 +824,17 @@ class Orchestrator:
             ),
         })
 
-        response = self._openai.chat.completions.create(
-            model=MODEL,
-            max_tokens=1500,
-            messages=messages,
-        )
-        answer = response.choices[0].message.content.strip()
+        try:
+            response = self._openai.chat.completions.create(
+                model=MODEL,
+                max_tokens=1500,
+                messages=messages,
+            )
+            answer = response.choices[0].message.content.strip()
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).exception("Document Q&A API error: %s", exc)
+            answer = "_(Unable to process document query due to a connection issue. Please try again.)_"
         return self._respond(
             "[Intake]",
             f"_{filename}_\n\n{answer}",
@@ -923,12 +952,105 @@ class Orchestrator:
                     messages.append({"role": role, "content": content})
         messages.append({"role": "user", "content": message})
 
-        response = self._openai.chat.completions.create(
-            model=MODEL,
-            max_tokens=800,
-            messages=messages,
+        try:
+            response = self._openai.chat.completions.create(
+                model=MODEL,
+                max_tokens=500,
+                messages=messages,
+            )
+            return self._respond("[Analyst]", response.choices[0].message.content.strip())
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).exception("Analyst conversational API error: %s", exc)
+            return self._respond("[Analyst]", "_(Analyst is temporarily unavailable due to a connection issue. Please try again.)_")
+
+    def _handle_planner_conversational(
+        self, message: str, conversation_history: Optional[list],
+        workroom: Optional[WorkroomSession] = None, doc_block: str = ""
+    ) -> dict:
+        """Planner in conversational workroom mode — acts as a prioritisation and planning advisor."""
+        requests = self.storage.list_requests()
+        context_parts = []
+        if requests:
+            top = requests[:5]
+            context_parts.append(f"PM backlog has {len(requests)} requests. Top: " +
+                                 "; ".join(f"{r.priority} {r.description[:60]}" for r in top))
+        if workroom:
+            context_parts.append(f"Workroom goal: {workroom.goal}")
+
+        system = (
+            "You are a strategic planning advisor for a Technical Program Manager. "
+            "You help prioritise work, identify dependencies, sequence tasks, "
+            "and structure focus areas based on available data and context.\n\n"
+            f"{CONVERSATIONAL_MODE}\n\n"
+            f"Context: {' '.join(context_parts)}"
         )
-        return self._respond("[Analyst]", response.choices[0].message.content.strip())
+        if doc_block:
+            system += f"\n\n{doc_block}"
+
+        messages = [{"role": "system", "content": system}]
+        if conversation_history:
+            for msg in conversation_history[-10:]:
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                if content and role in ("user", "assistant"):
+                    messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": message})
+
+        try:
+            response = self._openai.chat.completions.create(
+                model=MODEL,
+                max_tokens=500,
+                messages=messages,
+            )
+            return self._respond("[Planner]", response.choices[0].message.content.strip())
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).exception("Planner conversational API error: %s", exc)
+            return self._respond("[Planner]", "_(Planner is temporarily unavailable. Please try again.)_")
+
+    def _handle_intake_conversational(
+        self, message: str, conversation_history: Optional[list],
+        workroom: Optional[WorkroomSession] = None, doc_block: str = ""
+    ) -> dict:
+        """Intake in conversational workroom mode — participates in discussion about requirements and document content."""
+        requests = self.storage.list_requests()
+        context_parts = []
+        if requests:
+            context_parts.append(f"PM backlog has {len(requests)} tracked requests.")
+        if workroom:
+            context_parts.append(f"Workroom goal: {workroom.goal}")
+
+        system = (
+            "You are a requirements intake specialist for a Technical Program Manager. "
+            "You identify, clarify, and structure customer requests, feature asks, and requirements "
+            "from conversations and documents. You help ensure nothing gets missed.\n\n"
+            f"{CONVERSATIONAL_MODE}\n\n"
+            f"Context: {' '.join(context_parts)}"
+        )
+        if doc_block:
+            system += f"\n\n{doc_block}"
+
+        messages = [{"role": "system", "content": system}]
+        if conversation_history:
+            for msg in conversation_history[-10:]:
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                if content and role in ("user", "assistant"):
+                    messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": message})
+
+        try:
+            response = self._openai.chat.completions.create(
+                model=MODEL,
+                max_tokens=500,
+                messages=messages,
+            )
+            return self._respond("[Intake]", response.choices[0].message.content.strip())
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).exception("Intake conversational API error: %s", exc)
+            return self._respond("[Intake]", "_(Intake is temporarily unavailable. Please try again.)_")
 
     # ------------------------------------------------------------------ #
     # Direct read handlers                                                #
@@ -1048,12 +1170,17 @@ class Orchestrator:
                 doc_block = team_block + doc_block
 
         if key == "intake":
-            # If there is an active document, treat as doc Q&A; else normal intake
+            # In workroom mode, participate in discussion; otherwise normal intake
+            if is_workroom:
+                return self._handle_intake_conversational(message, conversation_history, workroom, doc_block)
             if document_context:
                 return self._handle_document_query(message, document_context, conversation_history)
             return self._handle_intake(message)
 
         if key == "planner":
+            # In workroom mode, act as a prioritisation advisor
+            if is_workroom:
+                return self._handle_planner_conversational(message, conversation_history, workroom, doc_block)
             return self._respond(
                 "[Planner]",
                 "To build your day plan upload a briefing file in the Today tab, "
@@ -1265,6 +1392,9 @@ class Orchestrator:
         """
         Ask every active agent to respond to the same message in sequence.
 
+        To reduce overlap, each agent receives a summary of prior agent
+        responses in the same round so they can differentiate their input.
+
         Returns:
             {
               "agent": "[Round Table]",
@@ -1288,20 +1418,56 @@ class Orchestrator:
             ordered = all_builtin
 
         responses: list[dict] = []
+        # Track prior agent summaries for overlap reduction
+        prior_summaries: list[str] = []
 
         for key in ordered:
             try:
-                result = self._route_by_key(key, message, conversation_history, document_context, active_agents, workroom=workroom)
+                # Inject prior agent responses into conversation history
+                # so the current agent can differentiate its contribution
+                augmented_history = list(conversation_history or [])
+                if prior_summaries and workroom:
+                    prior_block = "\n".join(prior_summaries)
+                    augmented_history.append({
+                        "role": "assistant",
+                        "content": (
+                            f"[Other agents in this round already said:]\n{prior_block}\n\n"
+                            "[Your turn — add NEW points only. Do not repeat what was already covered.]"
+                        ),
+                    })
+
+                result = self._route_by_key(
+                    key, message, augmented_history, document_context,
+                    active_agents, workroom=workroom
+                )
                 label = result.get("agent", f"[{key.capitalize()}]")
                 text = result.get("text", "")
                 responses.append({"agent": label, "text": text})
+
+                # Build a compact summary of this agent's response for the next agent
+                if workroom and text:
+                    # Truncate to keep context manageable
+                    summary_line = f"- {label}: {text[:200]}{'...' if len(text) > 200 else ''}"
+                    prior_summaries.append(summary_line)
 
                 # Auto-detect decisions in each response
                 if workroom and _is_decision(text):
                     decision = Decision(content=text[:300], context=message[:200])
                     self.storage.add_workroom_decision(workroom.id, decision)
             except Exception as e:
-                responses.append({"agent": f"[{key.capitalize()}]", "text": f"_(Error: {e})_"})
+                # Retry once on connection errors before giving up
+                import time
+                import logging
+                logging.getLogger(__name__).warning("Round table agent %s failed (%s), retrying...", key, e)
+                time.sleep(2)
+                try:
+                    result = self._route_by_key(key, message, conversation_history, document_context, active_agents, workroom=workroom)
+                    label = result.get("agent", f"[{key.capitalize()}]")
+                    text = result.get("text", "")
+                    responses.append({"agent": label, "text": text})
+                except Exception as e2:
+                    logging.getLogger(__name__).exception("Round table agent %s retry also failed: %s", key, e2)
+                    responses.append({"agent": f"[{key.capitalize()}]", "text": "_(Temporarily unavailable. Please resend your message to try again.)_"})
 
         # Build combined markdown for the "text" field
         parts = []
@@ -1379,15 +1545,20 @@ class Orchestrator:
             user_prompt += f"Session context:\n{context_block}\n\n"
         user_prompt += f"Conversation transcript:\n\n{transcript}"
 
-        response = self._openai.chat.completions.create(
-            model=MODEL,
-            max_tokens=3000,
-            messages=[
-                {"role": "system", "content": GENERATE_OUTPUT_SYSTEM},
-                {"role": "user", "content": user_prompt},
-            ],
-        )
-        content = response.choices[0].message.content.strip()
+        try:
+            response = self._openai.chat.completions.create(
+                model=MODEL,
+                max_tokens=3000,
+                messages=[
+                    {"role": "system", "content": GENERATE_OUTPUT_SYSTEM},
+                    {"role": "user", "content": user_prompt},
+                ],
+            )
+            content = response.choices[0].message.content.strip()
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).exception("generate_output API error: %s", exc)
+            content = "_(Unable to generate output due to a connection issue. Please try again.)_"
 
         # Persist to workroom if provided
         if workroom:

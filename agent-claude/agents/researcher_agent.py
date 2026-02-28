@@ -18,9 +18,7 @@ Does NOT:
   - Build day plans (Planner's job)
 """
 
-from openai import OpenAI
-
-from config import MODEL, OPENAI_API_KEY
+from config import MODEL, make_openai_client
 from storage import StorageManager
 
 
@@ -59,7 +57,7 @@ def _format_requests(requests) -> str:
 class ResearcherAgent:
     def __init__(self, storage: StorageManager):
         self.storage = storage
-        self.client = OpenAI(api_key=OPENAI_API_KEY)
+        self.client = make_openai_client()
 
     def research(
         self,
@@ -92,8 +90,10 @@ class ResearcherAgent:
             system += f"\n\n{doc_context}"
         if concise:
             system += (
-                "\n\nIMPORTANT: You are in a live workroom discussion. "
-                "Respond in 3-5 sentences (hard max 6) with your key findings. "
+                "\n\nCRITICAL CONSTRAINT — You are in a live workroom discussion. "
+                "You MUST respond in 3-5 sentences (absolute hard max 6 sentences). "
+                "Do NOT use headers, bullet lists, numbered lists, or multi-section formatting. "
+                "Write in flowing prose paragraphs only. "
                 "Cite specific facts from the document context above — don't ask questions the doc already answers. "
                 "You'll get follow-up turns — save the deep dive for when asked. "
                 "End with → the single most important finding or gap."
@@ -118,9 +118,14 @@ class ResearcherAgent:
             ),
         })
 
-        response = self.client.chat.completions.create(
-            model=MODEL,
-            max_tokens=800 if concise else 2000,
-            messages=messages,
-        )
-        return response.choices[0].message.content.strip()
+        try:
+            response = self.client.chat.completions.create(
+                model=MODEL,
+                max_tokens=500 if concise else 2500,
+                messages=messages,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).exception("ResearcherAgent API error: %s", exc)
+            return "_(Researcher is temporarily unavailable due to a connection issue. Please try again.)_"

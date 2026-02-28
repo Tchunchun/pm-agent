@@ -21,6 +21,7 @@ from agents import Orchestrator
 from agents.topic_classifier import TopicClassifier
 from agents.facilitator_agent import FacilitatorAgent
 from agents.agent_designer import AgentDesigner
+from skills.bootstrap import bootstrap_skills
 
 
 # ------------------------------------------------------------------ #
@@ -66,6 +67,8 @@ st.set_page_config(
 def _init_state():
     if "storage" not in st.session_state:
         st.session_state.storage = StorageManager()
+        # Bootstrap skills once, after storage is ready
+        bootstrap_skills(storage=st.session_state.storage)
     if "orchestrator" not in st.session_state:
         st.session_state.orchestrator = Orchestrator(st.session_state.storage)
     if "messages" not in st.session_state:
@@ -208,11 +211,10 @@ def _parse_meeting_context(raw_context: str, topic: str) -> dict:
     Use OpenAI to extract a structured meeting objective and desired outcome
     from freeform user context. Returns {"objective": str, "outcome": str}.
     """
-    from openai import OpenAI
-    from config import MODEL
+    from config import MODEL, make_openai_client
     import json as _json
 
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    client = make_openai_client()
     prompt = f"""You are a TPM assistant. The user wants to set up a meeting workroom.
 
 Topic: {topic}
@@ -867,106 +869,19 @@ if page == "chat":
 
             wmsgs = st.session_state.workroom_messages
 
-            # ---- Session header (compact) ----
+            # ---- Layout: Immersive chat (left) + controls (right) ----
             meta = OUTPUT_TYPE_META.get(active_ws.output_type, {})
             mode_icon = "💼" if active_ws.mode == "work" else "🎉"
 
-            hdr_col1, hdr_col2 = st.columns([4, 1])
-            with hdr_col1:
-                st.markdown(f"### {mode_icon} {active_ws.title}")
-                _caption_parts = [
-                    f"🎯 {active_ws.goal}",
-                    f"{meta.get('emoji', '')} {meta.get('label', '')}",
-                    f"{'💼 Work' if active_ws.mode == 'work' else '🎉 Life'}",
-                ]
-                st.caption("  ·  ".join(_caption_parts))
-                if getattr(active_ws, "key_outcome", ""):
-                    st.caption(f"🏁 Key outcome: {active_ws.key_outcome}")
-            with hdr_col2:
-                if st.button("🗄 Archive", key="archive_ws", help="Archive this workroom"):
-                    storage.archive_workroom(active_ws.id)
-                    st.session_state.workroom_id = None
-                    st.session_state.workroom_messages = []
-                    st.rerun()
-
-            # ---- Agent team + discussion mode (collapsible) ----
-            with st.expander("🤖 Agent Team & Discussion Mode", expanded=False):
-                team_col, mode_col = st.columns([3, 2])
-                with team_col:
-                    all_opts = _all_agent_options()
-                    all_keys = [a["key"] for a in all_opts]
-                    selected_keys = st.multiselect(
-                        "Agent team",
-                        all_keys,
-                        default=[k for k in active_ws.active_agents if k in all_keys],
-                        format_func=lambda k: next(
-                            (f"{a['emoji']} {a['label']}" for a in all_opts if a["key"] == k), k
-                        ),
-                        key="ws_agent_team",
-                    )
-                    if selected_keys != active_ws.active_agents:
-                        active_ws.active_agents = selected_keys
-                        storage.save_workroom(active_ws)
-                with mode_col:
-                    disc_mode = st.radio(
-                        "Discussion mode",
-                        ["open", "round_table", "focused"],
-                        index=["open", "round_table", "focused"].index(active_ws.discussion_mode),
-                        format_func=lambda m: {
-                            "open": "💬 Open",
-                            "round_table": "🔄 Round Table",
-                            "focused": "🎯 Focused",
-                        }[m],
-                        key="ws_disc_mode",
-                        horizontal=True,
-                    )
-                    if disc_mode != active_ws.discussion_mode:
-                        active_ws.discussion_mode = disc_mode
-                        if disc_mode != "focused":
-                            active_ws.focused_agent = None
-                        storage.save_workroom(active_ws)
-
-                    if disc_mode == "focused":
-                        focus_opts = [a["key"] for a in all_opts]
-                        current_focused = active_ws.focused_agent or (focus_opts[0] if focus_opts else None)
-                        focused_agent = st.selectbox(
-                            "Focused agent",
-                            focus_opts,
-                            index=focus_opts.index(current_focused) if current_focused in focus_opts else 0,
-                            format_func=lambda k: next(
-                                (f"{a['emoji']} {a['label']}" for a in all_opts if a["key"] == k), k
-                            ),
-                            key="ws_focused_agent",
-                        )
-                        if focused_agent != active_ws.focused_agent:
-                            active_ws.focused_agent = focused_agent
-                            storage.save_workroom(active_ws)
-
-            # Show active agents as a compact pill line
-            agent_map = _agent_label_map()
-            active_labels = " · ".join(agent_map.get(k, k) for k in active_ws.active_agents)
-            disc_label = {"open": "💬 Open", "round_table": "🔄 Round Table", "focused": "🎯 Focused"}.get(active_ws.discussion_mode, "")
-            st.caption(f"**Team:** {active_labels}  |  **Mode:** {disc_label}")
-
-            # ---- Two-column layout: Chat (left) + Panels (right) ----
-            wr_input = None  # Will be set inside _chat_col
+            wr_input = None
             _chat_col, _panel_col = st.columns([3, 1])
 
             with _chat_col:
+                # Slim session title
+                st.markdown(f"#### {mode_icon} {active_ws.title}")
 
-                # ---- Active document banner ----
-                if st.session_state.workroom_active_document:
-                    doc_name = st.session_state.workroom_active_document.get("filename", "document")
-                    dcol1, dcol2 = st.columns([5, 1])
-                    with dcol1:
-                        st.info(f"📄 **{doc_name}** — ask questions about it in chat")
-                    with dcol2:
-                        if st.button("✕", key="clear_wr_doc"):
-                            st.session_state.workroom_active_document = None
-                            st.rerun()
-
-                # ---- Chat messages (larger area) ----
-                chat_box = st.container(height=620)
+                # ---- Chat messages (immersive, tall container) ----
+                chat_box = st.container(height=700)
                 with chat_box:
                     if not wmsgs:
                         st.markdown(
@@ -998,52 +913,143 @@ if page == "chat":
                                     st.markdown(f'<div class="agent-avatar">{agent_label}</div>', unsafe_allow_html=True)
                                 st.markdown(content)
 
-                # ---- Action bar (compact row) ----
-                act_col1, act_col2, act_col3, act_col4 = st.columns([1.5, 1.5, 1.5, 1.5])
-                with act_col1:
-                    if st.button(
-                        "🔄 Round Table",
-                        key="btn_round_table",
-                        help="Ask every active agent to respond",
-                        use_container_width=True,
-                        disabled=not wmsgs or active_ws.discussion_mode != "round_table",
-                    ):
-                        last_user_msg = next(
-                            (m["content"] for m in reversed(wmsgs) if m.get("role") == "user"), ""
-                        )
-                        if last_user_msg:
-                            with st.spinner("All agents thinking…"):
-                                result = orchestrator.round_table(
-                                    last_user_msg,
-                                    active_agents=active_ws.active_agents,
-                                    conversation_history=wmsgs,
-                                    document_context=st.session_state.workroom_active_document,
-                                    workroom=active_ws,
-                                )
-                            wmsgs.append({
-                                "role": "assistant",
-                                "content": result["text"],
-                                "agent": "[Round Table]",
-                                "multi_response": result.get("multi_response"),
-                            })
-                            _save_workroom_messages(active_ws.id, wmsgs)
-                            st.session_state.workroom_messages = wmsgs
+                # ---- Agent selector row (inside chat column, right below messages) ----
+                _agent_btns = active_ws.active_agents[:8]
+                _num_cols = min(len(_agent_btns) + 1, 9)  # +1 for label
+                _ag_cols = st.columns(_num_cols)
+                with _ag_cols[0]:
+                    st.caption("**Ask:**")
+                for _ai, _ak in enumerate(_agent_btns):
+                    _a_info = next((a for a in _all_agent_options() if a["key"] == _ak), None)
+                    _btn_label = f"{_a_info.get('emoji', '🤖')} {_a_info['label']}" if _a_info else f"🤖 {_ak}"
+                    with _ag_cols[_ai + 1]:
+                        if st.button(_btn_label, key=f"mention_{_ak}", use_container_width=True):
+                            st.session_state["wr_mention_prefix"] = f"@{_ak} "
                             st.rerun()
-                with act_col2:
-                    if st.button(
-                        f"{meta.get('emoji', '📄')} Generate Output",
-                        key="btn_generate_output",
-                        help="Synthesise the discussion into a structured document",
-                        use_container_width=True,
-                        disabled=len(wmsgs) < 2,
-                    ):
-                        st.session_state.show_output_panel = True
+
+            # ---- Right panel: Controls + references ----
+            with _panel_col:
+                # ---- 🎯 Session context (always visible) ----
+                st.markdown("#### 📌 Context")
+                st.markdown(f"**🎯 {active_ws.goal}**")
+                st.caption(f"{meta.get('emoji', '')} {meta.get('label', '')}  ·  {'💼 Work' if active_ws.mode == 'work' else '🎉 Life'}")
+                if getattr(active_ws, "key_outcome", ""):
+                    st.caption(f"🏁 {active_ws.key_outcome}")
+
+                # ---- Active document context ----
+                if st.session_state.workroom_active_document:
+                    doc_name = st.session_state.workroom_active_document.get("filename", "document")
+                    st.info(f"📄 **{doc_name}**")
+                    if st.button("✕ Remove doc", key="clear_wr_doc", use_container_width=True):
+                        st.session_state.workroom_active_document = None
                         st.rerun()
-                with act_col3:
-                    if st.button("📎 Upload File", key="btn_toggle_upload", use_container_width=True):
-                        st.session_state["show_wr_upload"] = not st.session_state.get("show_wr_upload", False)
+
+                # ---- 🤖 Agent Team & Mode ----
+                with st.expander("🤖 Team & Mode", expanded=False):
+                    all_opts = _all_agent_options()
+                    all_keys = [a["key"] for a in all_opts]
+                    selected_keys = st.multiselect(
+                        "Agent team",
+                        all_keys,
+                        default=[k for k in active_ws.active_agents if k in all_keys],
+                        format_func=lambda k: next(
+                            (f"{a['emoji']} {a['label']}" for a in all_opts if a["key"] == k), k
+                        ),
+                        key="ws_agent_team",
+                    )
+                    if selected_keys != active_ws.active_agents:
+                        active_ws.active_agents = selected_keys
+                        storage.save_workroom(active_ws)
+
+                    disc_mode = st.radio(
+                        "Discussion mode",
+                        ["open", "round_table", "focused"],
+                        index=["open", "round_table", "focused"].index(active_ws.discussion_mode),
+                        format_func=lambda m: {
+                            "open": "💬 Open",
+                            "round_table": "🔄 Round Table",
+                            "focused": "🎯 Focused",
+                        }[m],
+                        key="ws_disc_mode",
+                    )
+                    if disc_mode != active_ws.discussion_mode:
+                        active_ws.discussion_mode = disc_mode
+                        if disc_mode != "focused":
+                            active_ws.focused_agent = None
+                        storage.save_workroom(active_ws)
+
+                    if disc_mode == "focused":
+                        focus_opts = [a["key"] for a in all_opts]
+                        current_focused = active_ws.focused_agent or (focus_opts[0] if focus_opts else None)
+                        focused_agent = st.selectbox(
+                            "Focused agent",
+                            focus_opts,
+                            index=focus_opts.index(current_focused) if current_focused in focus_opts else 0,
+                            format_func=lambda k: next(
+                                (f"{a['emoji']} {a['label']}" for a in all_opts if a["key"] == k), k
+                            ),
+                            key="ws_focused_agent",
+                        )
+                        if focused_agent != active_ws.focused_agent:
+                            active_ws.focused_agent = focused_agent
+                            storage.save_workroom(active_ws)
+
+                # Active agents + mode caption
+                agent_map = _agent_label_map()
+                active_labels = " · ".join(agent_map.get(k, k) for k in active_ws.active_agents)
+                disc_label = {"open": "💬 Open", "round_table": "🔄 Round Table", "focused": "🎯 Focused"}.get(active_ws.discussion_mode, "")
+                st.caption(f"**Team:** {active_labels}  |  **Mode:** {disc_label}")
+
+                # ---- ⚡ Actions (no expander — always visible) ----
+                if st.button(
+                    "🔄 Round Table",
+                    key="btn_round_table",
+                    help="Ask every active agent to respond",
+                    use_container_width=True,
+                    disabled=not wmsgs or active_ws.discussion_mode != "round_table",
+                ):
+                    last_user_msg = next(
+                        (m["content"] for m in reversed(wmsgs) if m.get("role") == "user"), ""
+                    )
+                    if last_user_msg:
+                        with st.spinner("All agents thinking…"):
+                            result = orchestrator.round_table(
+                                last_user_msg,
+                                active_agents=active_ws.active_agents,
+                                conversation_history=wmsgs,
+                                document_context=st.session_state.workroom_active_document,
+                                workroom=active_ws,
+                            )
+                        wmsgs.append({
+                            "role": "assistant",
+                            "content": result["text"],
+                            "agent": "[Round Table]",
+                            "multi_response": result.get("multi_response"),
+                        })
+                        _save_workroom_messages(active_ws.id, wmsgs)
+                        st.session_state.workroom_messages = wmsgs
                         st.rerun()
-                with act_col4:
+
+                if st.button(
+                    f"{meta.get('emoji', '📄')} Generate",
+                    key="btn_generate_output",
+                    help="Synthesise the discussion into a structured document",
+                    use_container_width=True,
+                    disabled=len(wmsgs) < 2,
+                ):
+                    st.session_state.show_output_panel = True
+                    st.rerun()
+
+                if st.button("📎 Upload File", key="btn_toggle_upload", use_container_width=True):
+                    st.session_state["show_wr_upload"] = not st.session_state.get("show_wr_upload", False)
+                    st.rerun()
+
+                with st.expander("⚙️ More", expanded=False):
+                    if st.button("🗄 Archive", key="archive_ws", help="Archive this workroom", use_container_width=True):
+                        storage.archive_workroom(active_ws.id)
+                        st.session_state.workroom_id = None
+                        st.session_state.workroom_messages = []
+                        st.rerun()
                     if st.button("🗑 Clear Chat", key="btn_clear_wr_chat", use_container_width=True):
                         st.session_state.workroom_messages = []
                         _save_workroom_messages(active_ws.id, [])
@@ -1073,7 +1079,6 @@ if page == "chat":
                                 )
                             if resp.get("data") and resp["data"].get("document"):
                                 st.session_state.workroom_active_document = resp["data"]["document"]
-                                # Persist document context to workroom for cross-session access
                                 active_ws.document_context = resp["data"]["document"]
                                 storage.save_workroom(active_ws)
                             wmsgs.append({"role": "user", "content": f"📎 Uploaded: {wr_file.name}"})
@@ -1093,7 +1098,6 @@ if page == "chat":
                         "✨ Generate Output",
                         expanded=True,
                     ):
-                        # Allow user to change output format at generation time
                         output_keys = list(OUTPUT_TYPE_META.keys())
                         current_idx = output_keys.index(active_ws.output_type) if active_ws.output_type in output_keys else 0
                         selected_output_type = st.selectbox(
@@ -1102,7 +1106,7 @@ if page == "chat":
                             index=current_idx,
                             format_func=lambda k: f"{OUTPUT_TYPE_META[k]['emoji']} {OUTPUT_TYPE_META[k]['label']}",
                             key="gen_output_type_select",
-                            help="You can change the output format before generating.",
+                            help="Change the output format before generating.",
                         )
                         sel_meta = OUTPUT_TYPE_META.get(selected_output_type, {})
                         if sel_meta.get("description"):
@@ -1115,76 +1119,53 @@ if page == "chat":
                                 placeholder="e.g., A one-pager for the exec team",
                                 key="custom_output_desc",
                             )
-                        gen_col1, gen_col2 = st.columns([1, 1])
-                        with gen_col1:
-                            if st.button("⚡ Generate now", key="gen_output_now", type="primary"):
-                                # Update workroom output_type if changed
-                                if selected_output_type != active_ws.output_type:
-                                    active_ws.output_type = selected_output_type
-                                    storage.save_workroom(active_ws)
-                                with st.spinner("Synthesising discussion…"):
-                                    doc_content = orchestrator.generate_output(
-                                        output_type=selected_output_type,
-                                        messages=wmsgs,
-                                        workroom=active_ws,
-                                        custom_description=custom_desc,
-                                    )
-                                st.session_state["last_generated_output"] = doc_content
-                                st.session_state.show_output_panel = False
-                                st.rerun()
-                        with gen_col2:
-                            if st.button("Cancel", key="gen_output_cancel"):
-                                st.session_state.show_output_panel = False
-                                st.rerun()
-
-                # ---- @-mention agent picker ----
-                _mention_cols = st.columns(min(len(active_ws.active_agents) + 1, 8))
-                with _mention_cols[0]:
-                    st.caption("**@ Mention:**")
-                for _mi, _ak in enumerate(active_ws.active_agents[:7]):
-                    _a_info = next((a for a in _all_agent_options() if a["key"] == _ak), None)
-                    if _a_info:
-                        _btn_label = f"{_a_info.get('emoji', '🤖')} {_a_info['label']}"
-                    else:
-                        _btn_label = f"🤖 {_ak}"
-                    with _mention_cols[_mi + 1]:
-                        if st.button(_btn_label, key=f"mention_{_ak}", use_container_width=True):
-                            st.session_state["wr_mention_prefix"] = f"@{_ak} "
+                        if st.button("⚡ Generate now", key="gen_output_now", type="primary", use_container_width=True):
+                            if selected_output_type != active_ws.output_type:
+                                active_ws.output_type = selected_output_type
+                                storage.save_workroom(active_ws)
+                            with st.spinner("Synthesising discussion…"):
+                                doc_content = orchestrator.generate_output(
+                                    output_type=selected_output_type,
+                                    messages=wmsgs,
+                                    workroom=active_ws,
+                                    custom_description=custom_desc,
+                                )
+                            st.session_state["last_generated_output"] = doc_content
+                            st.session_state.show_output_panel = False
+                            st.rerun()
+                        if st.button("Cancel", key="gen_output_cancel", use_container_width=True):
+                            st.session_state.show_output_panel = False
                             st.rerun()
 
-            # ---- Right panel: Output, Decision Log, Past Outputs ----
-            with _panel_col:
-                st.markdown("#### 📋 Reference Panel")
+                st.divider()
 
-                # ---- Show last generated output ----
+                # ---- 📄 Last Generated Output ----
                 if st.session_state.get("last_generated_output"):
-                    with st.expander("📄 Last Generated Output", expanded=False):
+                    with st.expander("📄 Last Output", expanded=False):
                         st.markdown(st.session_state["last_generated_output"])
-                        dl_col1, dl_col2 = st.columns([1, 1])
-                        with dl_col1:
-                            st.download_button(
-                                "⬇ Download .md",
-                                data=st.session_state["last_generated_output"],
-                                file_name=f"{active_ws.title.replace(' ', '_')}_output.md",
-                                mime="text/markdown",
-                                key="download_output",
-                            )
-                        with dl_col2:
-                            if st.button("✕ Dismiss", key="dismiss_output"):
-                                del st.session_state["last_generated_output"]
-                                st.rerun()
+                        st.download_button(
+                            "⬇ Download .md",
+                            data=st.session_state["last_generated_output"],
+                            file_name=f"{active_ws.title.replace(' ', '_')}_output.md",
+                            mime="text/markdown",
+                            key="download_output",
+                            use_container_width=True,
+                        )
+                        if st.button("✕ Dismiss", key="dismiss_output", use_container_width=True):
+                            del st.session_state["last_generated_output"]
+                            st.rerun()
 
-                # ---- Decision log (compact) ----
+                # ---- 📓 Decision Log ----
                 active_ws_fresh = storage.get_workroom(active_ws.id)
                 if active_ws_fresh and active_ws_fresh.decisions:
-                    with st.expander(f"📓 Decision Log ({len(active_ws_fresh.decisions)})", expanded=False):
+                    with st.expander(f"📓 Decisions ({len(active_ws_fresh.decisions)})", expanded=False):
                         for d in active_ws_fresh.decisions:
                             st.markdown(f"- **{d.made_at[:16].replace('T', ' ')}** — {d.content[:200]}")
                 else:
-                    with st.expander("📓 Decision Log", expanded=False):
+                    with st.expander("📓 Decisions", expanded=False):
                         st.caption("No decisions recorded yet.")
 
-                # ---- Past generated outputs ----
+                # ---- 📚 Past Outputs ----
                 if active_ws_fresh and active_ws_fresh.generated_outputs:
                     with st.expander(f"📚 Past Outputs ({len(active_ws_fresh.generated_outputs)})", expanded=False):
                         for go in reversed(active_ws_fresh.generated_outputs):
@@ -1212,39 +1193,31 @@ if page == "chat":
             _mention_active = st.session_state.get("wr_mention_active", "")
 
             disc_hint = {
-                "open": "Type a message… or click an agent above to @mention",
-                "round_table": "Type a message, then click 🔄 Round Table to get all agents' views",
+                "open": "Type a message… or select an agent above",
+                "round_table": "Type a message, then click 🔄 Round Table in the side panel",
                 "focused": f"Talking to {active_ws.focused_agent or 'focused agent'} — type your message",
             }
 
+            # Show mention indicator above the unified chat input
             if _mention_active:
-                # Use text_input for pre-filled @mention — constrain to chat column width (3:1 split)
-                _m_left, _m_right = st.columns([3, 1])
-                with _m_left:
-                    wr_input = st.text_input(
-                        "Message",
-                        value=_mention_active,
-                        key="wr_mention_input",
-                        label_visibility="collapsed",
-                        placeholder="Continue typing after the @mention…",
-                    )
-                    _mc1, _mc2, _mc_spacer = st.columns([1, 1, 10])
-                    with _mc1:
-                        _send_mention = st.button("Send", key="wr_mention_send", type="primary")
-                    with _mc2:
-                        if st.button("Cancel", key="wr_mention_cancel"):
-                            st.session_state.pop("wr_mention_active", None)
-                            st.rerun()
-                if _send_mention:
-                    # Clear mention mode — message will be processed below
-                    st.session_state.pop("wr_mention_active", None)
-                else:
-                    wr_input = None  # Don't process until Send is clicked
-            else:
-                wr_input = st.chat_input(
-                    disc_hint.get(active_ws.discussion_mode, "Type a message…"),
-                    key="wr_chat_input",
-                )
+                _agent_key = _mention_active.strip().lstrip("@")
+                _a_map = _agent_label_map()
+                _a_display = _a_map.get(_agent_key, _agent_key)
+                _ind_col1, _ind_col2 = st.columns([6, 1])
+                with _ind_col1:
+                    st.caption(f"💬 Directing to **{_a_display}** — type your question below")
+                with _ind_col2:
+                    if st.button("✕", key="wr_mention_cancel", help="Cancel @mention"):
+                        st.session_state.pop("wr_mention_active", None)
+                        st.rerun()
+
+            _placeholder = f"Ask {_a_display}…" if _mention_active else disc_hint.get(active_ws.discussion_mode, "Type a message…")
+            wr_input = st.chat_input(_placeholder, key="wr_chat_input")
+
+            # Prepend @mention prefix to the message if mention mode is active
+            if wr_input and _mention_active:
+                wr_input = f"{_mention_active}{wr_input}"
+                st.session_state.pop("wr_mention_active", None)
 
             # ---- Process chat input (outside columns) ----
             # Two-phase approach: Phase 1 saves user msg + reruns so it appears
@@ -1321,10 +1294,11 @@ if page == "chat":
                                 "multi_response": result.get("multi_response"),
                             })
                 except Exception as _chat_err:
-                    import traceback
+                    import logging
+                    logging.getLogger(__name__).exception("Workroom chat error: %s", _chat_err)
                     wmsgs.append({
                         "role": "assistant",
-                        "content": f"⚠️ **Error:** {_chat_err}\n\n```\n{traceback.format_exc()[-500:]}\n```",
+                        "content": "Something went wrong processing your message. Please try sending it again.",
                         "agent": "[System]",
                     })
 
