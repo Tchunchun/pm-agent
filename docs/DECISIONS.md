@@ -211,3 +211,129 @@ CustomAgent(key="my_agent", ..., skill_names=["get_current_date", "search_backlo
 - Created: `Tests/create_test_room3.py` — Test ROOM 3 with persisted doc context
 
 **Status:** Executed
+
+---
+
+## 2026-02-28 — Google OAuth2 Authentication (Feature Branch)
+
+**Decision:** Add Google OAuth2 authentication to gate app access behind Google sign-in. Implementation on `feat/google-auth` branch to avoid blocking `main` deployment.
+
+**Approach:**
+1. **Google OAuth2 Authorization Code Flow** — user clicks "Sign in with Google", redirected to Google consent, callback completes auth
+2. **Backward compatible** — auth only activates when `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` env vars are set; without them, app works as before (anonymous placeholder user)
+3. **Session-based** — re-auth per browser session; no cookie persistence in v1
+4. **User store** — `data/users.json` with atomic writes (matching existing StorageManager pattern)
+5. **Minimal dependencies** — only `requests` (already transitive via streamlit/openai); no heavy auth libraries
+
+**Scope:**
+- Created: `agent-claude/auth/__init__.py` — module exports: `require_auth`, `get_current_user`, `logout`, `is_auth_enabled`
+- Created: `agent-claude/auth/google_oauth.py` — OAuth URL builder, token exchange, userinfo fetch
+- Created: `agent-claude/auth/user_store.py` — JSON-backed user persistence with atomic writes
+- Created: `agent-claude/auth/login_page.py` — Streamlit login UI with branded card + Google button
+- Created: `agent-claude/auth/session.py` — Session management: CSRF state, callback handling, `require_auth()` gating
+- Modified: `agent-claude/config.py` — added `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `APP_URL` env vars
+- Modified: `agent-claude/app.py` — auth gate after `set_page_config`, logout button in sidebar, user avatar display
+- Modified: `agent-claude/requirements.txt` — added `requests>=2.28`
+
+**Env vars required for activation:**
+- `GOOGLE_CLIENT_ID` — from Google Cloud Console OAuth 2.0 credentials
+- `GOOGLE_CLIENT_SECRET` — from Google Cloud Console OAuth 2.0 credentials
+- `APP_URL` — (optional) defaults to `http://localhost:8501`; set to production URL in Azure
+
+**Status:** Executed
+
+---
+
+## 2026-03-01 — Agno Framework Adoption
+
+**Decision:** Replace all raw OpenAI SDK calls with Agno Agent framework (v2.5.8). Every LLM interaction now goes through `agno.agent.Agent` instead of `openai.ChatCompletion.create()`.
+
+**Rationale:** Agno provides a structured agent abstraction with built-in tool-call loop, structured outputs, and message management. This eliminates ~200 lines of manual tool-call iteration code in `CustomAgentRunner`, standardizes the LLM interface across all agents, and positions the project for future features (Teams, Knowledge, State Management).
+
+**Scope:**
+- Modified: `agent-claude/requirements.txt` — added `agno[openai]>=2.5.8`
+- Modified: `agent-claude/config.py` — added `get_agno_model(max_tokens=None)` factory returning `agno.models.azure.AzureOpenAI` or `agno.models.openai.OpenAIChat`; kept `make_openai_client()` for test backward compat
+- Created: `agent-claude/skills/tools.py` — 3 plain Agno tool functions replacing old Skill class hierarchy
+- Modified: `agent-claude/skills/__init__.py` — simplified to export only `skills.tools` functions
+- Modified: `agent-claude/agents/custom_agent_runner.py` — fully rewritten; Agno Agent replaces manual tool-call loop
+- Modified: `agent-claude/agents/facilitator_agent.py` — uses Agno Agent via `_run_facilitator()` helper
+- Modified: `agent-claude/agents/topic_classifier.py` — uses Agno Agent for classification
+- Modified: `agent-claude/agents/agent_designer.py` — uses Agno Agent for team design
+- Modified: `agent-claude/agents/orchestrator.py` — all 5 raw OpenAI calls replaced (summarize_document, _handle_document_query, smart_route, generate_output, removed `self._openai`)
+- Modified: `agent-claude/app.py` — `_parse_meeting_context()` uses Agno Agent; removed `bootstrap_skills` import/call
+- Deleted: `agent-claude/agents/challenger_agent.py` — dead code (never imported)
+- Deleted: `agent-claude/agents/writer_agent.py` — dead code (never imported)
+- Deleted: `agent-claude/agents/researcher_agent.py` — dead code (never imported)
+- Deleted: `agent-claude/skills/base.py`, `skills/registry.py`, `skills/bootstrap.py`, `skills/builtin/` — old Skill class hierarchy replaced by `skills/tools.py`
+
+**Key technical notes:**
+- `max_completion_tokens` is a model-level param in Agno (not Agent-level): pass via `get_agno_model(max_tokens=N)`
+- Azure model class is `agno.models.azure.AzureOpenAI` (not AzureOpenAIChat)
+- `Agent.run(input=str|List[Message])` returns `RunOutput` with `.content` field
+- Tool functions are plain Python functions; Agno auto-generates schemas from docstrings + type hints
+
+**Status:** Executed
+
+---
+
+## 2026-03-09 — Streaming Responses for Workroom Chat
+
+**Decision:** Add token-by-token streaming for single-agent responses in workroom chat. When exactly one agent responds (focused mode, or smart_route selecting 1 agent), tokens stream live into the Streamlit UI via `st.write_stream()`. Multi-agent round-table and 2-agent mini round tables remain batch (unchanged).
+
+**Rationale:** User reported workroom chat feels slow because each agent response blocks until fully complete. Streaming gives immediate visual feedback, reducing perceived latency. Scope limited to single-agent paths to avoid complexity of streaming N parallel agents.
+
+**Scope:**
+- Modified: `agent-claude/agents/custom_agent_runner.py` — added `respond_stream()` generator method alongside `respond()`. Uses `Agent.run(stream=True)` and yields `RunContentEvent.content` chunks.
+- Modified: `agent-claude/agents/orchestrator.py` — added `route_by_key_stream()` (streaming dispatch by key) and `smart_route_stream()` (LLM routing → single-agent streaming or None for multi-agent fallback). Added `Generator` to imports.
+- Modified: `agent-claude/app.py` — rewrote Phase 2 processing block: focused mode uses `route_by_key_stream()` → `st.write_stream()`, open mode tries `smart_route_stream()` first with batch fallback, round table unchanged.
+
+**Key technical notes:**
+- Agno streaming: `Agent.run(input=..., stream=True)` → `Iterator[RunOutputEvent | RunOutput]`
+- Filter on `chunk.event == RunEvent.run_content.value` (= `"RunContent"`) to get text deltas
+- `st.write_stream(generator)` accepts any string generator, returns concatenated full text
+- Existing `respond()`, `_route_by_key()`, `smart_route()` untouched (backward compatible)
+- Facilitator falls back to non-streaming (yields full text in one chunk)
+
+**Status:** Executed
+
+---
+
+## 2026-03-09 — Fix Empty Streaming Responses in Workroom Concise Mode
+
+**Decision:** Increase `max_completion_tokens` from 500 to 2000 for workroom (concise) mode in both `respond()` and `respond_stream()`.
+
+**Rationale:** `gpt-5-mini` is a reasoning model that uses internal reasoning tokens counted against the `max_completion_tokens` budget. With concise mode's 500-token limit, the model's reasoning consumed the entire budget, leaving 0 tokens for visible output. The concise constraint in the system prompt already limits response length (3-6 sentences), so increasing the token budget to 2000 lets the model reason properly while still producing short output.
+
+**Root cause evidence:**
+- Workroom messages stored with empty content despite correct agent routing
+- `max_tokens=500` + analyst prompt + concise constraint → 0 RunContent chunks
+- `max_tokens=2000` + same prompt → 106 chunks (working)
+- `max_tokens=500` + analyst prompt (no concise) → 112 chunks (working)
+
+**Scope:**
+- Modified: `agent-claude/agents/custom_agent_runner.py` — changed `get_agno_model(max_tokens=500 if concise else 2000)` to `get_agno_model(max_tokens=2000)` in both `respond()` and `respond_stream()`.
+
+**Status:** Executed
+
+---
+
+## 2026-03-09 — Full Streaming Support for Open Discussion Mode
+
+**Decision:** Extend streaming to cover all open mode scenarios — single-agent, multi-agent, and open-ended messages. Previously only single-agent selections streamed; multi-agent and open-ended fell back to batch.
+
+**Rationale:** User expects consistent streaming in open mode. Sequential streaming of multiple agents provides immediate feedback for each agent while maintaining readability, rather than waiting for all agents to finish via batch.
+
+**Design:**
+- `smart_route_stream()` return type changed from `tuple | None` to `list[tuple[str, Generator]] | None`
+- Single agent selection → `[(label, gen)]` — streams one agent
+- Multi-agent selection (2+) → `[(label1, gen1), (label2, gen2)]` — streams each sequentially
+- Open-ended messages → streams all active agents sequentially (previously went to batch round_table)
+- Returns `None` only on routing error (batch fallback)
+- App.py iterates the list, streaming each agent into its own `chat_message("assistant")` bubble
+- Single-response stored as simple message; multi-response stored with `multi_response` list for proper re-rendering
+
+**Scope:**
+- Modified: `agent-claude/agents/orchestrator.py` — `smart_route_stream()` returns list of (label, generator) tuples; open-ended and multi-agent paths now produce streams
+- Modified: `agent-claude/app.py` — open mode handler iterates stream list, renders each agent sequentially via `st.write_stream()`
+
+**Status:** Executed

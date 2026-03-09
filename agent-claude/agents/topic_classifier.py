@@ -11,7 +11,10 @@ of available agents, it calls OpenAI once and returns:
 
 import json
 import logging
-from config import MODEL, make_openai_client
+
+from agno.agent import Agent
+
+from config import get_agno_model
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +41,7 @@ Output format:
 
 class TopicClassifier:
     def __init__(self):
-        self.client = make_openai_client()
+        pass
 
     def classify(
         self,
@@ -70,15 +73,15 @@ Available agents:
 Please recommend the best subset of agents for this session."""
 
         try:
-            response = self.client.chat.completions.create(
-                model=MODEL,
-                max_completion_tokens=800,
-                messages=[
-                    {"role": "system", "content": CLASSIFIER_SYSTEM},
-                    {"role": "user", "content": user_message},
-                ],
+            agent = Agent(
+                name="TopicClassifier",
+                model=get_agno_model(max_tokens=800),
+                instructions=CLASSIFIER_SYSTEM,
+                markdown=False,
+                add_datetime_to_context=False,
             )
-            raw = response.choices[0].message.content.strip()
+            result_output = agent.run(input=user_message)
+            raw = result_output.content.strip() if isinstance(result_output.content, str) else str(result_output.content).strip()
             result = json.loads(raw)
             # Validate shape
             if "recommended" not in result or "rationale" not in result:

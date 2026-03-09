@@ -21,7 +21,10 @@ Falls back to {"reasoning": "", "agents": []} on any error.
 
 import json
 import logging
-from config import MODEL, make_openai_client
+
+from agno.agent import Agent
+
+from config import get_agno_model
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +61,7 @@ Output format:
 
 class AgentDesigner:
     def __init__(self):
-        self.client = make_openai_client()
+        pass
 
     def design(self, problem: str) -> dict:
         """
@@ -75,15 +78,15 @@ class AgentDesigner:
 Please identify the domain experts needed and propose a specialist agent team."""
 
         try:
-            response = self.client.chat.completions.create(
-                model=MODEL,
-                max_completion_tokens=2000,
-                messages=[
-                    {"role": "system", "content": DESIGNER_SYSTEM},
-                    {"role": "user", "content": user_message},
-                ],
+            agent = Agent(
+                name="AgentDesigner",
+                model=get_agno_model(max_tokens=2000),
+                instructions=DESIGNER_SYSTEM,
+                markdown=False,
+                add_datetime_to_context=False,
             )
-            raw = response.choices[0].message.content.strip()
+            result_output = agent.run(input=user_message)
+            raw = result_output.content.strip() if isinstance(result_output.content, str) else str(result_output.content).strip()
             result = json.loads(raw)
 
             # Validate top-level shape

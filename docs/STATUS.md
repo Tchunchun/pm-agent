@@ -50,9 +50,9 @@ Living tracker — updated after every execution. Cross-referenced with `docs/DE
 
 | Feature | Status | Notes | DECISIONS ref |
 |---------|--------|-------|---------------|
-| Challenger Agent | ✅ Done | `agents/challenger_agent.py` — red-teams decisions; PRD §10 Tier 2 vision | — |
-| Writer Agent | ✅ Done | `agents/writer_agent.py` — emails, briefs, stakeholder updates | — |
-| Researcher Agent | ✅ Done | `agents/researcher_agent.py` — deep dives, industry context | — |
+| Challenger Agent | ✅ Done | Challenger functionality via `custom_agents.json` — routed through CustomAgentRunner → Agno Agent | — |
+| Writer Agent | ✅ Done | Writer functionality via `custom_agents.json` — routed through CustomAgentRunner → Agno Agent | — |
+| Researcher Agent | ✅ Done | Researcher functionality via `custom_agents.json` — routed through CustomAgentRunner → Agno Agent | — |
 | Workroom Sessions | ✅ Done | Multi-agent collaborative sessions with goal-driven workflow; `models/workroom.py` | 2026-02-27 |
 | Custom Agent Creation | ✅ Done | User-defined agents with custom prompts; `agents/default_agents.py` | — |
 | Agent Hub Tab | ✅ Done | Browse, create, test custom agents; Settings tab | — |
@@ -63,7 +63,10 @@ Living tracker — updated after every execution. Cross-referenced with `docs/DE
 | Explore Experts (Agent Hub) | ✅ Done | Problem-first agent discovery: describe challenge → LLM proposes domain experts with reasoning → review + save to library | 2026-02-27 |
 | Agent Category Overhaul | ✅ Done | 4-category system (pm_workflow/ai_product/career/life) + dynamic sections; category sync migration; manual create form updated | 2026-02-27 |
 | Agent Hub Cleanup + Prompt Divergence Fix | ✅ Done | Removed intake/analyst/researcher/writer from Agent Hub (solo-chat only); planner + challenger system prompts enriched for workroom conversational use | 2026-02-27 |
-| Skills Framework | ✅ Done | `skills/` package: Skill base class, SkillRegistry singleton, bootstrap; 3 built-in skills (get_current_date, search_backlog, get_recent_insights); CustomAgent.skill_names field; CustomAgentRunner tool-call loop | 2026-02-28 |
+| Skills Framework | ✅ Done | `skills/tools.py` — 3 Agno tool functions (get_current_date, search_backlog, get_recent_insights); resolved by CustomAgentRunner._resolve_tools() | 2026-02-28 |
+| Google OAuth Authentication | ✅ Done | `auth/` package: Google OAuth2 login, user store, session gating; on `feat/google-auth` branch; backward compatible (disabled without env vars) | 2026-02-28 |
+| Agno Framework Adoption | ✅ Done | All LLM calls migrated from raw OpenAI SDK to Agno Agent framework (v2.5.8); `config.get_agno_model()` factory; standalone agent files deleted (dead code); old Skill class hierarchy replaced | 2026-03-01 |
+| Streaming Responses | ✅ Done | Token-by-token streaming for single-agent workroom responses (focused mode + smart_route single-pick); `st.write_stream()` for live UI; round table/multi-agent stays batch | 2026-03-09 |
 
 ---
 

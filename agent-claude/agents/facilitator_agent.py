@@ -8,7 +8,11 @@ Responsibilities:
 """
 
 import logging
-from config import MODEL, make_openai_client
+
+from agno.agent import Agent
+from agno.models.message import Message
+
+from config import get_agno_model
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +28,23 @@ Your role:
 """
 
 
+def _run_facilitator(prompt: str, max_tokens: int = 700) -> str:
+    """Create a one-shot facilitator agent and run it."""
+    agent = Agent(
+        name="Facilitator",
+        model=get_agno_model(max_tokens=max_tokens),
+        instructions=FACILITATOR_SYSTEM,
+        markdown=True,
+        add_datetime_to_context=False,
+    )
+    result = agent.run(input=prompt)
+    content = result.content if result.content else ""
+    return content.strip() if isinstance(content, str) else str(content).strip()
+
+
 class FacilitatorAgent:
     def __init__(self):
-        self.client = make_openai_client()
+        pass
 
     # ------------------------------------------------------------------ #
     # Opening message                                                      #
@@ -37,9 +55,6 @@ class FacilitatorAgent:
         Generates the first message in a new workroom.
         Introduces the session objective, agents present, and asks an
         opening question to kick things off.
-
-        workroom: WorkroomSession instance
-        agents: list of agent dicts with keys: key, label, emoji, description
         """
         agent_lines = "\n".join(
             f"- {a.get('emoji', '🤖')} **{a['label']}**: {a.get('description', '')}"
@@ -64,15 +79,7 @@ Write the opening message. It should:
 Keep the total length under 200 words."""
 
         try:
-            response = self.client.chat.completions.create(
-                model=MODEL,
-                max_completion_tokens=700,
-                messages=[
-                    {"role": "system", "content": FACILITATOR_SYSTEM},
-                    {"role": "user", "content": prompt},
-                ],
-            )
-            return response.choices[0].message.content.strip()
+            return _run_facilitator(prompt, max_tokens=700)
         except Exception as exc:
             logger.exception("FacilitatorAgent.open_session failed: %s", exc)
             return (
@@ -94,7 +101,6 @@ Keep the total length under 200 words."""
         Reads recent conversation and produces a concise progress summary
         with suggested next focus.
         """
-        # Build a compact transcript (last 20 messages at most)
         recent = messages[-20:]
         transcript_lines = []
         for m in recent:
@@ -124,15 +130,7 @@ Write a brief facilitator check-in (under 150 words) that:
 Use markdown formatting."""
 
         try:
-            response = self.client.chat.completions.create(
-                model=MODEL,
-                max_completion_tokens=600,
-                messages=[
-                    {"role": "system", "content": FACILITATOR_SYSTEM},
-                    {"role": "user", "content": prompt},
-                ],
-            )
-            return response.choices[0].message.content.strip()
+            return _run_facilitator(prompt, max_tokens=600)
         except Exception as exc:
             logger.exception("FacilitatorAgent.generate_summary failed: %s", exc)
             return "**Facilitator check-in:** Let's pause and review progress. What has been decided so far, and what still needs resolution?"

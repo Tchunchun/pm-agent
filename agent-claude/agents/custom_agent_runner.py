@@ -1,33 +1,78 @@
 """
-CustomAgentRunner — executes user-defined agents with their own system prompt.
+CustomAgentRunner — executes user-defined agents using Agno framework.
 
-Supports optional skill/tool-use: if the agent's CustomAgent definition
-includes skill_names, those skills are looked up in the global SkillRegistry
-and passed to the LLM as OpenAI function-calling tools.
-
-Tool-call loop (up to MAX_TOOL_ROUNDS):
-  1. Call LLM with tools=[...]
-  2. If finish_reason == "tool_calls" → execute each tool, append results,
-     loop back to step 1.
-  3. Otherwise → return the text response.
+Each CustomAgent definition (key, label, system_prompt, skill_names) is turned
+into an Agno Agent instance.  The Agno Agent handles the LLM call, tool-call
+loop, and result assembly automatically.
 """
 
-import json
 import logging
+from typing import Generator, Optional
 
-from config import MODEL, make_openai_client
+from agno.agent import Agent, RunEvent
+from agno.models.message import Message
+
+from config import get_agno_model
 from models.workroom import CustomAgent
 
 logger = logging.getLogger(__name__)
 
-# Safety cap: prevent infinite tool-call loops
-MAX_TOOL_ROUNDS = 5
+# Base formatting instruction — always applied unless overridden
+_FORMAT_INSTRUCTION = (
+    "\n\nIMPORTANT — Format your response for readability. "
+    "Use bullet points, numbered lists, **bold** for key terms, "
+    "and short paragraphs. Use markdown headers (##) to organize "
+    "longer answers. Never return a wall of unformatted text."
+)
+
+# Concise mode constraint for multi-agent workroom sessions (round-table / open)
+_CONCISE_CONSTRAINT = (
+    "\n\nCONSTRAINT — You are in a multi-agent workroom discussion. "
+    "Keep your response concise (3-6 sentences or equivalent bullet points). "
+    "Use **bold**, bullet points, or numbered lists for scannability. "
+    "Cite specific facts from the document context — don't ask questions the doc already answers. "
+    "You'll get follow-up turns — don't try to cover everything now. "
+    "End with → your single most important takeaway, question, or recommendation."
+)
+
+# Focused mode constraint — single agent, thorough + well-formatted
+_FOCUSED_CONSTRAINT = (
+    "\n\nYou are the sole active agent in a focused workroom session. "
+    "Use clear formatting to make your response easy to scan: "
+    "bullet points, numbered lists, bold text, and short paragraphs are encouraged. "
+    "Structure longer answers with markdown headers (##) when appropriate. "
+    "Keep your response well-organized but thorough — you are the only responder. "
+    "End with → a clear next-step question or recommendation."
+)
+
+
+def _resolve_tools(skill_names: list[str] | None) -> list:
+    """Map skill_names from the CustomAgent definition to Agno tool functions."""
+    if not skill_names:
+        return []
+    try:
+        from skills.tools import get_current_date, search_backlog, get_recent_insights
+    except ImportError:
+        logger.warning("CustomAgentRunner: skills.tools not available")
+        return []
+
+    name_to_func = {
+        "get_current_date": get_current_date,
+        "search_backlog": search_backlog,
+        "get_recent_insights": get_recent_insights,
+    }
+    tools = [name_to_func[n] for n in skill_names if n in name_to_func]
+    if len(tools) < len(skill_names):
+        missing = [n for n in skill_names if n not in name_to_func]
+        logger.warning("CustomAgentRunner: unknown skills ignored: %s", missing)
+    return tools
 
 
 class CustomAgentRunner:
-    def __init__(self, agent_def: CustomAgent):
+    def __init__(self, agent_def: CustomAgent, storage=None):
         self.agent_def = agent_def
-        self.client = make_openai_client()
+        self._storage = storage
+        self._tools = _resolve_tools(agent_def.skill_names)
 
     def respond(
         self,
@@ -35,154 +80,151 @@ class CustomAgentRunner:
         conversation_history: list | None = None,
         document_context: dict | None = None,
         concise: bool = False,
+        focused: bool = False,
         doc_context: str = "",
     ) -> str:
-        # ------------------------------------------------------------------ #
-        # Build system prompt                                                 #
-        # ------------------------------------------------------------------ #
-        system_prompt = self.agent_def.system_prompt
-        if concise:
-            system_prompt += (
-                "\n\nCRITICAL CONSTRAINT — You are in a live workroom discussion. "
-                "You MUST respond in 3-5 sentences (absolute hard max 6 sentences). "
-                "Do NOT use headers, bullet lists, numbered lists, or multi-section formatting. "
-                "Write in flowing prose paragraphs only. "
-                "Cite specific facts from the document context — don't ask questions the doc already answers. "
-                "You'll get follow-up turns — don't try to cover everything now. "
-                "End with → your single most important takeaway, question, or recommendation."
-            )
-        # Prefer pre-built summary (doc_context) over raw document text for cost efficiency
+        # ---- Build dynamic instructions ----
+        instructions = self.agent_def.system_prompt
+        if focused:
+            instructions += _FOCUSED_CONSTRAINT
+        elif concise:
+            instructions += _CONCISE_CONSTRAINT
+        else:
+            instructions += _FORMAT_INSTRUCTION
         if doc_context:
-            system_prompt += f"\n\n{doc_context}"
+            instructions += f"\n\n{doc_context}"
         elif document_context:
             filename = document_context.get("filename", "the uploaded document")
-            system_prompt += (
+            instructions += (
                 f"\n\nA reference document has been uploaded to this session: **{filename}**. "
                 "The full text of this document is embedded directly in the user message under "
                 "'Document context'. You already have access to all of its content — do NOT say "
                 "you cannot access the file. Read the embedded text and use it to answer."
             )
 
-        # ------------------------------------------------------------------ #
-        # Build message history                                               #
-        # ------------------------------------------------------------------ #
-        messages = [{"role": "system", "content": system_prompt}]
+        # ---- Build Agno Agent for this call ----
+        deps = {"storage": self._storage} if self._storage else {}
+        agent = Agent(
+            name=self.agent_def.label,
+            model=get_agno_model(max_tokens=2000),
+            instructions=instructions,
+            tools=self._tools or None,
+            tool_call_limit=5,
+            dependencies=deps,
+            markdown=True,
+            add_datetime_to_context=False,
+        )
 
+        # ---- Build conversation input ----
+        messages: list[Message] = []
         history_window = 12 if concise else 8
         if conversation_history:
             for msg in conversation_history[-history_window:]:
                 role = msg.get("role", "user")
                 content = msg.get("content", "")
-                # Skip any prior confused "cannot access" messages to avoid reinforcing them
                 if not content or role not in ("user", "assistant"):
                     continue
                 if "cannot access" in content.lower() or "i need to extract" in content.lower():
                     continue
-                messages.append({"role": role, "content": content})
+                messages.append(Message(role=role, content=content))
 
+        # Build user message with optional doc text
         user_content = message
-        # Only embed full doc text if no pre-built summary was provided (non-workroom mode)
         if document_context and not doc_context:
             doc_text = document_context.get("text", "")[:8000]
             user_content = (
                 f"Document context ({document_context.get('filename', '')}):\n"
                 f"---\n{doc_text}\n---\n\n{message}"
             )
+        messages.append(Message(role="user", content=user_content))
 
-        messages.append({"role": "user", "content": user_content})
-
-        # ------------------------------------------------------------------ #
-        # Resolve skills / tools                                              #
-        # ------------------------------------------------------------------ #
-        tools: list[dict] = []
-        if self.agent_def.skill_names:
-            try:
-                from skills.registry import registry as skill_registry
-                tools = skill_registry.to_openai_tools(self.agent_def.skill_names)
-            except ImportError:
-                logger.warning("CustomAgentRunner: skills package not available")
-
-        # ------------------------------------------------------------------ #
-        # LLM call — with optional tool-call loop                            #
-        # ------------------------------------------------------------------ #
+        # ---- Run agent ----
         try:
-            for _round in range(MAX_TOOL_ROUNDS):
-                call_kwargs: dict = {
-                    "model": MODEL,
-                    "max_completion_tokens": 500 if concise else 2000,
-                    "messages": messages,
-                }
-                if tools:
-                    call_kwargs["tools"] = tools
-                    call_kwargs["tool_choice"] = "auto"
-
-                response = self.client.chat.completions.create(**call_kwargs)
-                choice = response.choices[0]
-
-                # ---- tool_calls: execute each tool and loop ----
-                if choice.finish_reason == "tool_calls" and choice.message.tool_calls:
-                    # Append assistant turn (including tool_calls metadata)
-                    assistant_msg: dict = {
-                        "role": "assistant",
-                        "content": choice.message.content or "",
-                        "tool_calls": [
-                            {
-                                "id": tc.id,
-                                "type": "function",
-                                "function": {
-                                    "name": tc.function.name,
-                                    "arguments": tc.function.arguments,
-                                },
-                            }
-                            for tc in choice.message.tool_calls
-                        ],
-                    }
-                    messages.append(assistant_msg)
-
-                    # Execute each tool call and append results
-                    try:
-                        from skills.registry import registry as skill_registry
-                    except ImportError:
-                        skill_registry = None
-
-                    for tc in choice.message.tool_calls:
-                        fn_name = tc.function.name
-                        try:
-                            fn_args = json.loads(tc.function.arguments)
-                        except json.JSONDecodeError:
-                            fn_args = {}
-
-                        if skill_registry:
-                            result = skill_registry.execute(fn_name, **fn_args)
-                        else:
-                            result = f"[Skill '{fn_name}' could not be executed: registry unavailable]"
-
-                        logger.debug(
-                            "CustomAgentRunner: tool '%s'(%s) → %s",
-                            fn_name, fn_args, result[:120],
-                        )
-
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tc.id,
-                            "content": result,
-                        })
-                    # Continue loop — LLM will now see tool results
-                    continue
-
-                # ---- normal response ----
-                return (choice.message.content or "").strip()
-
-            # Exceeded MAX_TOOL_ROUNDS — return whatever the last response was
-            logger.warning(
-                "CustomAgentRunner: exceeded %d tool rounds for agent '%s'",
-                MAX_TOOL_ROUNDS, self.agent_def.key,
-            )
-            return (choice.message.content or "").strip()  # type: ignore[possibly-undefined]
-
+            result = agent.run(input=messages)
+            content = result.content if result.content else ""
+            if isinstance(content, str):
+                return content.strip()
+            return str(content).strip()
         except Exception as exc:
             logger.exception("CustomAgentRunner API error: %s", exc)
             return (
+                f"_({self.agent_def.label} is temporarily unavailable due to a "
+                "connection issue. Please try again.)_"
+            )
+
+    def respond_stream(
+        self,
+        message: str,
+        conversation_history: list | None = None,
+        document_context: dict | None = None,
+        concise: bool = False,
+        focused: bool = False,
+        doc_context: str = "",
+    ) -> Generator[str, None, None]:
+        """Streaming variant of respond(). Yields text chunks as they arrive."""
+        # ---- Build dynamic instructions (same as respond) ----
+        instructions = self.agent_def.system_prompt
+        if focused:
+            instructions += _FOCUSED_CONSTRAINT
+        elif concise:
+            instructions += _CONCISE_CONSTRAINT
+        else:
+            instructions += _FORMAT_INSTRUCTION
+        if doc_context:
+            instructions += f"\n\n{doc_context}"
+        elif document_context:
+            filename = document_context.get("filename", "the uploaded document")
+            instructions += (
+                f"\n\nA reference document has been uploaded to this session: **{filename}**. "
+                "The full text of this document is embedded directly in the user message under "
+                "'Document context'. You already have access to all of its content — do NOT say "
+                "you cannot access the file. Read the embedded text and use it to answer."
+            )
+
+        # ---- Build Agno Agent ----
+        deps = {"storage": self._storage} if self._storage else {}
+        agent = Agent(
+            name=self.agent_def.label,
+            model=get_agno_model(max_tokens=2000),
+            instructions=instructions,
+            tools=self._tools or None,
+            tool_call_limit=5,
+            dependencies=deps,
+            markdown=True,
+            add_datetime_to_context=False,
+        )
+
+        # ---- Build conversation input (same as respond) ----
+        messages: list[Message] = []
+        history_window = 12 if concise else 8
+        if conversation_history:
+            for msg in conversation_history[-history_window:]:
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                if not content or role not in ("user", "assistant"):
+                    continue
+                if "cannot access" in content.lower() or "i need to extract" in content.lower():
+                    continue
+                messages.append(Message(role=role, content=content))
+
+        user_content = message
+        if document_context and not doc_context:
+            doc_text = document_context.get("text", "")[:8000]
+            user_content = (
+                f"Document context ({document_context.get('filename', '')}):\n"
+                f"---\n{doc_text}\n---\n\n{message}"
+            )
+        messages.append(Message(role="user", content=user_content))
+
+        # ---- Run agent with streaming ----
+        try:
+            for chunk in agent.run(input=messages, stream=True):
+                if hasattr(chunk, "event") and chunk.event == RunEvent.run_content.value:
+                    if chunk.content:
+                        yield str(chunk.content)
+        except Exception as exc:
+            logger.exception("CustomAgentRunner streaming error: %s", exc)
+            yield (
                 f"_({self.agent_def.label} is temporarily unavailable due to a "
                 "connection issue. Please try again.)_"
             )
