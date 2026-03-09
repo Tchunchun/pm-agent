@@ -11,6 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 import streamlit as st
+import time
 from datetime import date, datetime, timezone
 
 from config import APP_TITLE, APP_ICON, INBOX_DIR, has_valid_credentials
@@ -263,6 +264,26 @@ def _save_workroom_messages(workroom_id: str, msgs: list[dict]) -> None:
 
 def _load_workroom_messages(workroom_id: str) -> list[dict]:
     return storage.load_workroom_messages(workroom_id)
+
+
+def _render_agent_header(agent_label: str, elapsed_sec: float | None = None) -> None:
+    """Render agent avatar badge with optional response-time indicator."""
+    if not agent_label:
+        return
+    if elapsed_sec is not None:
+        if elapsed_sec < 60:
+            time_str = f"{elapsed_sec:.1f}s"
+        else:
+            mins = int(elapsed_sec // 60)
+            secs = elapsed_sec % 60
+            time_str = f"{mins}m {secs:.0f}s"
+        st.markdown(
+            f'<div class="agent-avatar">{agent_label}'
+            f'<span class="response-time">⏱ {time_str}</span></div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(f'<div class="agent-avatar">{agent_label}</div>', unsafe_allow_html=True)
 
 
 # ------------------------------------------------------------------ #
@@ -712,13 +733,11 @@ if page == "chat":
                             for resp in msg.get("multi_response", []):
                                 with st.chat_message("assistant"):
                                     agent_name = resp.get("agent", "")
-                                    if agent_name:
-                                        st.markdown(f'<div class="agent-avatar">{agent_name}</div>', unsafe_allow_html=True)
+                                    _render_agent_header(agent_name, resp.get("elapsed_sec"))
                                     st.markdown(resp.get("text", ""))
                         else:
                             with st.chat_message("assistant"):
-                                if agent_label:
-                                    st.markdown(f'<div class="agent-avatar">{agent_label}</div>', unsafe_allow_html=True)
+                                _render_agent_header(agent_label, msg.get("elapsed_sec"))
                                 st.markdown(content)
 
                 # ---- Agent selector row (inside chat column, right below messages) ----
@@ -1032,6 +1051,7 @@ if page == "chat":
                         from models.workroom import Decision as WRDecision
                         multi_response = []
                         for _rt_key in active_ws.active_agents:
+                            _rt_t0 = time.time()
                             _rt_stream = orchestrator.route_by_key_stream(
                                 _rt_key,
                                 _pending,
@@ -1043,10 +1063,10 @@ if page == "chat":
                             if _rt_stream:
                                 _rt_label, _rt_gen = _rt_stream
                                 with chat_box.chat_message("assistant"):
-                                    if _rt_label:
-                                        st.markdown(f'<div class="agent-avatar">{_rt_label}</div>', unsafe_allow_html=True)
+                                    _render_agent_header(_rt_label)
                                     _rt_text = st.write_stream(_rt_gen)
-                                multi_response.append({"agent": _rt_label, "text": _rt_text or ""})
+                                _rt_elapsed = round(time.time() - _rt_t0, 2)
+                                multi_response.append({"agent": _rt_label, "text": _rt_text or "", "elapsed_sec": _rt_elapsed})
                                 if _is_decision(_rt_text or ""):
                                     storage.add_workroom_decision(
                                         active_ws.id,
@@ -1064,6 +1084,7 @@ if page == "chat":
 
                     elif active_ws.discussion_mode == "focused" and active_ws.focused_agent:
                         # Focused mode: stream single agent
+                        _focused_t0 = time.time()
                         stream_result = orchestrator.route_by_key_stream(
                             active_ws.focused_agent,
                             _pending,
@@ -1075,9 +1096,9 @@ if page == "chat":
                         if stream_result:
                             agent_label, gen = stream_result
                             with chat_box.chat_message("assistant"):
-                                if agent_label:
-                                    st.markdown(f'<div class="agent-avatar">{agent_label}</div>', unsafe_allow_html=True)
+                                _render_agent_header(agent_label)
                                 full_text = st.write_stream(gen)
+                            _focused_elapsed = round(time.time() - _focused_t0, 2)
                             _streamed = True
                             from agents.orchestrator import _is_decision
                             if _is_decision(full_text or ""):
@@ -1090,9 +1111,11 @@ if page == "chat":
                                 "role": "assistant",
                                 "content": full_text or "",
                                 "agent": agent_label,
+                                "elapsed_sec": _focused_elapsed,
                             })
                         else:
                             # Fallback to batch
+                            _batch_t0 = time.time()
                             with st.spinner("Thinking…"):
                                 result = orchestrator._route_by_key(
                                     active_ws.focused_agent,
@@ -1101,6 +1124,7 @@ if page == "chat":
                                     document_context=st.session_state.workroom_active_document,
                                     active_agents=active_ws.active_agents,
                                 )
+                                _batch_elapsed = round(time.time() - _batch_t0, 2)
                                 from agents.orchestrator import _is_decision
                                 if _is_decision(result.get("text", "")):
                                     from models.workroom import Decision as WRDecision
@@ -1112,6 +1136,7 @@ if page == "chat":
                                     "role": "assistant",
                                     "content": result.get("text", ""),
                                     "agent": result.get("agent", ""),
+                                    "elapsed_sec": _batch_elapsed,
                                 })
 
                     else:
@@ -1128,11 +1153,12 @@ if page == "chat":
                             from models.workroom import Decision as WRDecision
                             multi_response = []
                             for agent_label, gen in stream_results:
+                                _open_t0 = time.time()
                                 with chat_box.chat_message("assistant"):
-                                    if agent_label:
-                                        st.markdown(f'<div class="agent-avatar">{agent_label}</div>', unsafe_allow_html=True)
+                                    _render_agent_header(agent_label)
                                     full_text = st.write_stream(gen)
-                                multi_response.append({"agent": agent_label, "text": full_text or ""})
+                                _open_elapsed = round(time.time() - _open_t0, 2)
+                                multi_response.append({"agent": agent_label, "text": full_text or "", "elapsed_sec": _open_elapsed})
                                 if _is_decision(full_text or ""):
                                     storage.add_workroom_decision(
                                         active_ws.id,
@@ -1144,6 +1170,7 @@ if page == "chat":
                                     "role": "assistant",
                                     "content": multi_response[0]["text"],
                                     "agent": multi_response[0]["agent"],
+                                    "elapsed_sec": multi_response[0].get("elapsed_sec"),
                                 })
                             else:
                                 parts = [f"**{r['agent']}**\n\n{r['text']}" for r in multi_response]
@@ -1155,6 +1182,7 @@ if page == "chat":
                                 })
                         else:
                             # Routing error → batch fallback
+                            _batch_t0 = time.time()
                             with st.spinner("Thinking…"):
                                 result = orchestrator.handle_message(
                                     _pending,
@@ -1166,6 +1194,7 @@ if page == "chat":
                                     active_agents=active_ws.active_agents,
                                     workroom=active_ws,
                                 )
+                                _batch_elapsed = round(time.time() - _batch_t0, 2)
                                 from agents.orchestrator import _is_decision
                                 from models.workroom import Decision as WRDecision
                                 if _is_decision(result.get("text", "")):
@@ -1173,11 +1202,14 @@ if page == "chat":
                                         active_ws.id,
                                         WRDecision(content=result["text"][:300], context=_pending[:200])
                                     )
+                                # Add timing to multi_response entries if present
+                                _mr = result.get("multi_response")
                                 wmsgs.append({
                                     "role": "assistant",
                                     "content": result.get("text", ""),
                                     "agent": result.get("agent", ""),
-                                    "multi_response": result.get("multi_response"),
+                                    "elapsed_sec": _batch_elapsed,
+                                    "multi_response": _mr,
                                 })
                 except Exception as _chat_err:
                     import logging

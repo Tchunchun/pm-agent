@@ -336,4 +336,32 @@ CustomAgent(key="my_agent", ..., skill_names=["get_current_date", "search_backlo
 - Modified: `agent-claude/agents/orchestrator.py` — `smart_route_stream()` returns list of (label, generator) tuples; open-ended and multi-agent paths now produce streams
 - Modified: `agent-claude/app.py` — open mode handler iterates stream list, renders each agent sequentially via `st.write_stream()`
 
+---
+
+## 2026-03-09 — Workroom Response Quality Improvements
+
+**Decision:** Implement 5 improvements based on review of the "Plan for the weekend" workroom session where agents repeatedly asked clarifying questions instead of delivering outputs, duplicated each other's content, and the writer drafted inter-agent messages instead of user-facing content.
+
+**Changes:**
+
+1. **Reduce clarification loops (action-bias):** Added `_ACTION_BIAS_CONSTRAINT` to `custom_agent_runner.py` — instructs agents to assume reasonable defaults and deliver a usable output first, limiting follow-up questions to at most one truly critical question.
+
+2. **Turn-awareness for delivery mode:** Added `_DELIVERY_TURN_THRESHOLD` (3 user messages) — after this threshold, agents receive an instruction to deliver concrete output and stop asking questions. Counts user turns from `conversation_history`.
+
+3. **Frustration detection:** Added `_detect_frustration()` in `orchestrator.py` — regex-based detection of impatience signals ("what's the output?", "just give me", "stop asking", etc.) plus a heuristic for short messages after 3+ user turns. When triggered, injects `_FRUSTRATION_MODE_CONSTRAINT` into all agent prompts to force immediate delivery mode.
+
+4. **Round-table deduplication:** Added `_deduplicate_round_table()` in `orchestrator.py` — after all agents respond in parallel, an LLM pass edits responses to remove cross-agent redundancy so each agent adds only its unique perspective. Falls back to original responses on error.
+
+5. **Writer targets end-users:** Updated writer system prompt in both `default_agents.py` and `custom_agents.json` — added AUDIENCE RULE that defaults to end-user audience, explicitly prohibits drafting messages to other AI agents, and instructs writer to synthesise discussion into user-actionable content.
+
+**Rationale:** The weekend-planning workroom session revealed that agents asked for energy level 3 times, all 4 agents restated identical facts (drive time, pet fees, group size), the user expressed frustration ("what's the plan?") which was ignored, and the writer drafted a "Teams message to weekend_planner" instead of a shareable plan for the user.
+
+**Scope:**
+- Modified: `agent-claude/agents/custom_agent_runner.py` — new constraints (`_ACTION_BIAS_CONSTRAINT`, `_FRUSTRATION_MODE_CONSTRAINT`, `_DELIVERY_TURN_THRESHOLD`), `respond()` and `respond_stream()` accept `frustration_detected` param
+- Modified: `agent-claude/agents/orchestrator.py` — `_detect_frustration()` function, `_deduplicate_round_table()` method, frustration propagation through `smart_route()`, `round_table()`, `_route_by_key()`, and their streaming variants
+- Modified: `agent-claude/agents/default_agents.py` — writer agent system prompt updated with AUDIENCE RULE
+- Modified: `agent-claude/data/custom_agents.json` — live writer agent prompt updated
+
+**Status:** Executed
+
 **Status:** Executed

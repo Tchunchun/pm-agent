@@ -33,9 +33,9 @@ from models.workroom import CustomAgent, WorkroomSession, Decision, GeneratedOut
 
 CONVERSATIONAL_MODE = (
     "CRITICAL CONSTRAINT — You are in a live workroom discussion. "
-    "You MUST respond in 3-5 sentences (absolute hard max 6 sentences). "
-    "Do NOT use headers, bullet lists, numbered lists, or multi-section formatting. "
-    "Write in flowing prose paragraphs only. "
+    "Keep your response concise (aim for 4-8 sentences, hard max ~150 words). "
+    "Use clear formatting to make your response scannable: "
+    "**bold** key terms, use bullet points for lists, and short paragraphs. "
     "Lead with your key insight, recommendation, or answer. "
     "Add supporting reasoning only when it's non-obvious. "
     "You will get follow-up turns — do NOT try to cover everything in one response. "
@@ -98,6 +98,43 @@ DECISION_KEYWORDS_WEAK = [
 
 # Minimum length for decision detection — short advisory sentences are not decisions
 _DECISION_MIN_LENGTH = 120
+
+# ------------------------------------------------------------------ #
+# Frustration / impatience detection                                  #
+# ------------------------------------------------------------------ #
+
+_FRUSTRATION_PATTERNS = [
+    r"\b(what'?s|where'?s)\s+the\s+(output|result|plan|answer)\b",
+    r"\bjust\s+(give|tell|show)\s+me\b",
+    r"\bstop\s+asking\b",
+    r"\b(already|still)\s+(told|said|answered|gave)\b",
+    r"\bcan\s+you\s+just\b",
+    r"\bi\s+(already|just)\s+(said|told|answered)\b",
+    r"\bget\s+to\s+the\s+point\b",
+    r"\bso\s*,?\s*what'?s\s+the\b",
+    r"\bplease\s+just\b",
+    r"\benough\s+(questions|asking|discussion)\b",
+    r"\bwhy\s+(are|do)\s+you\s+keep\s+asking\b",
+]
+
+
+def _detect_frustration(message: str, conversation_history: list | None = None) -> bool:
+    """Detect if the user is expressing frustration or impatience.
+    
+    Checks the current message for frustration patterns and also considers
+    whether the user has been asked repeated questions across turns.
+    """
+    msg_lower = message.lower()
+    # Direct frustration signal in current message
+    if any(re.search(p, msg_lower) for p in _FRUSTRATION_PATTERNS):
+        return True
+    # Heuristic: if user message is very short AND there have been 3+ prior
+    # user messages, they're likely expecting an answer, not more questions
+    if conversation_history:
+        user_turns = sum(1 for m in conversation_history if m.get("role") == "user")
+        if user_turns >= 3 and len(message.split()) <= 8 and "?" not in message:
+            return True
+    return False
 
 # @mention → agent key map
 MENTION_MAP = {
@@ -379,18 +416,22 @@ class Orchestrator:
                     f"Add them via the agent selector above, or @mention one of the active agents.",
                 )
             if len(mention_keys) == 1:
+                frustrated = _detect_frustration(message, conversation_history)
                 return self._route_by_key(
                     mention_keys[0], message, conversation_history,
-                    document_context, active_agents, workroom=workroom
+                    document_context, active_agents, workroom=workroom,
+                    frustration_detected=frustrated,
                 )
             else:
                 # Multiple agents mentioned — mini round table with just those agents
+                frustrated = _detect_frustration(message, conversation_history)
                 return self.round_table(
                     message,
                     active_agents=mention_keys,
                     conversation_history=conversation_history,
                     document_context=document_context,
                     workroom=workroom,
+                    frustration_detected=frustrated,
                 )
 
         # ---- Workroom: bypass intent detection, use smart_route ----
@@ -557,6 +598,7 @@ class Orchestrator:
         document_context: Optional[dict],
         active_agents: Optional[list],
         workroom: Optional[WorkroomSession] = None,
+        frustration_detected: bool = False,
     ) -> dict:
         """Dispatch to a built-in or custom agent by its key string.
         
@@ -598,7 +640,8 @@ class Orchestrator:
             result = runner.respond(message, conversation_history, document_context,
                                     concise=is_workroom and not is_focused,
                                     focused=is_focused,
-                                    doc_context=doc_block)
+                                    doc_context=doc_block,
+                                    frustration_detected=frustration_detected)
             return self._respond(label, result)
 
         return self._respond(
@@ -614,6 +657,7 @@ class Orchestrator:
         document_context: Optional[dict],
         active_agents: Optional[list],
         workroom: Optional[WorkroomSession] = None,
+        frustration_detected: bool = False,
     ) -> tuple[str, Generator[str, None, None]] | None:
         """Streaming variant of _route_by_key(). Returns (agent_label, generator) or None."""
         if not self._agent_allowed(key, active_agents):
@@ -654,6 +698,7 @@ class Orchestrator:
                 concise=is_workroom and not is_focused,
                 focused=is_focused,
                 doc_context=doc_block,
+                frustration_detected=frustration_detected,
             )
             return label, gen
 
@@ -705,6 +750,9 @@ class Orchestrator:
         """
         import json as _json
 
+        # Detect frustration early — propagate to all downstream agents
+        frustrated = _detect_frustration(message, conversation_history)
+
         # Open-ended messages → respect curated team, use all agents
         if self._is_open_ended(message):
             return self.round_table(
@@ -713,6 +761,7 @@ class Orchestrator:
                 conversation_history=conversation_history,
                 document_context=document_context,
                 workroom=workroom,
+                frustration_detected=frustrated,
             )
 
         # Build agent descriptions for the LLM
@@ -770,13 +819,15 @@ class Orchestrator:
                 conversation_history=conversation_history,
                 document_context=document_context,
                 workroom=workroom,
+                frustration_detected=frustrated,
             )
 
         # Single agent — direct route
         if len(selected) == 1:
             return self._route_by_key(
                 selected[0], message, conversation_history,
-                document_context, active_agents, workroom=workroom
+                document_context, active_agents, workroom=workroom,
+                frustration_detected=frustrated,
             )
 
         # Two agents — mini round table with just those two
@@ -786,6 +837,7 @@ class Orchestrator:
             conversation_history=conversation_history,
             document_context=document_context,
             workroom=workroom,
+            frustration_detected=frustrated,
         )
 
     def _build_agent_descriptions(self, active_agents: list) -> list[dict]:
@@ -825,6 +877,9 @@ class Orchestrator:
         """
         import json as _json
 
+        # Detect frustration for streaming path
+        frustrated = _detect_frustration(message, conversation_history)
+
         # Open-ended → stream ALL active agents sequentially
         if self._is_open_ended(message):
             streams = []
@@ -832,6 +887,7 @@ class Orchestrator:
                 result = self.route_by_key_stream(
                     key, message, conversation_history,
                     document_context, active_agents, workroom=workroom,
+                    frustration_detected=frustrated,
                 )
                 if result:
                     streams.append(result)
@@ -884,6 +940,7 @@ class Orchestrator:
             result = self.route_by_key_stream(
                 key, message, conversation_history,
                 document_context, active_agents, workroom=workroom,
+                frustration_detected=frustrated,
             )
             if result:
                 streams.append(result)
@@ -900,12 +957,15 @@ class Orchestrator:
         conversation_history: Optional[list] = None,
         document_context: Optional[dict] = None,
         workroom: Optional[WorkroomSession] = None,
+        frustration_detected: bool = False,
     ) -> dict:
         """
         Ask every active agent to respond to the same message in parallel.
 
         All agents receive shared conversation history and document context.
         Responses are collected via ThreadPoolExecutor for lower latency.
+        When multiple agents respond, a deduplication pass removes redundant
+        content so each agent adds distinct value.
 
         Returns:
             {
@@ -938,6 +998,7 @@ class Orchestrator:
                 result = self._route_by_key(
                     key, message, list(conversation_history or []),
                     document_context, active_agents, workroom=workroom,
+                    frustration_detected=frustration_detected,
                 )
                 return {
                     "key": key,
@@ -952,6 +1013,7 @@ class Orchestrator:
                     result = self._route_by_key(
                         key, message, list(conversation_history or []),
                         document_context, active_agents, workroom=workroom,
+                        frustration_detected=frustration_detected,
                     )
                     return {
                         "key": key,
@@ -985,6 +1047,10 @@ class Orchestrator:
                     decision = Decision(content=r["text"][:300], context=message[:200])
                     self.storage.add_workroom_decision(workroom.id, decision)
 
+        # Deduplicate: when multiple agents respond, remove redundant content
+        if len(responses) > 1:
+            responses = self._deduplicate_round_table(responses)
+
         # Build combined markdown for the "text" field
         parts = []
         for r in responses:
@@ -1000,6 +1066,64 @@ class Orchestrator:
             "pending_action": None,
             "pending_data": None,
         }
+
+    # ------------------------------------------------------------------ #
+    # Round-table deduplication                                           #
+    # ------------------------------------------------------------------ #
+
+    _DEDUP_SYSTEM = (
+        "You are an editor for a multi-agent discussion. You are given responses from "
+        "multiple AI agents to the same user message. Your job is to EDIT each response "
+        "to remove redundant or duplicated content across agents.\n\n"
+        "Rules:\n"
+        "- Each agent should only keep content that is UNIQUE to their expertise\n"
+        "- If two agents say the same fact (e.g., drive time, pet fees, budget), keep it "
+        "in the agent whose expertise is most relevant and remove it from others\n"
+        "- If an agent's entire response is redundant with others, replace it with a single "
+        "sentence like '[Agent] concurs with [other agent] and adds: [one unique point]'\n"
+        "- Preserve each agent's distinct recommendations, risks, or insights\n"
+        "- Keep the overall tone and agent labels intact\n"
+        "- Return the edited responses in the EXACT same JSON format\n\n"
+        "Return a JSON array of objects with 'agent' and 'text' keys. No markdown wrapping."
+    )
+
+    def _deduplicate_round_table(self, responses: list[dict]) -> list[dict]:
+        """Use an LLM pass to remove redundant content across agent responses."""
+        import json as _json
+
+        # Build the input for the dedup agent
+        input_items = []
+        for r in responses:
+            input_items.append({"agent": r["agent"], "text": r["text"][:1500]})
+
+        prompt = (
+            "Here are responses from multiple agents to the same user message. "
+            "Edit them to remove redundancy. Each agent should only contain content "
+            "unique to their expertise.\n\n"
+            f"{_json.dumps(input_items, indent=2)}"
+        )
+
+        try:
+            dedup_agent = Agent(
+                name="ResponseDeduplicator",
+                model=get_agno_model(max_tokens=2500),
+                instructions=self._DEDUP_SYSTEM,
+                markdown=False,
+                add_datetime_to_context=False,
+            )
+            result = dedup_agent.run(input=prompt)
+            raw = result.content.strip() if isinstance(result.content, str) else str(result.content).strip()
+            # Parse JSON — handle markdown wrapping
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+            deduped = _json.loads(raw)
+            if isinstance(deduped, list) and len(deduped) == len(responses):
+                return [{"agent": d.get("agent", r["agent"]), "text": d.get("text", r["text"])}
+                        for d, r in zip(deduped, responses)]
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning("Round-table dedup failed, using original responses")
+        return responses
 
     # ------------------------------------------------------------------ #
     # Generate Output — synthesise session to a structured document      #

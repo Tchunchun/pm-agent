@@ -17,25 +17,41 @@ from models.workroom import CustomAgent
 
 logger = logging.getLogger(__name__)
 
-# Base formatting instruction — always applied unless overridden
-_FORMAT_INSTRUCTION = (
-    "\n\nIMPORTANT — Format your response for readability. "
-    "Use bullet points, numbered lists, **bold** for key terms, "
-    "and short paragraphs. Use markdown headers (##) to organize "
-    "longer answers. Never return a wall of unformatted text."
-)
-
-# Concise mode constraint for multi-agent workroom sessions (round-table / open)
+# Concise mode constraint appended to system prompt in workroom sessions (round-table / open)
 _CONCISE_CONSTRAINT = (
-    "\n\nCONSTRAINT — You are in a multi-agent workroom discussion. "
-    "Keep your response concise (3-6 sentences or equivalent bullet points). "
-    "Use **bold**, bullet points, or numbered lists for scannability. "
+    "\n\nCRITICAL CONSTRAINT — You are in a live workroom discussion. "
+    "Keep your response concise (aim for 4-8 sentences, hard max ~150 words). "
+    "Use clear formatting to make your response scannable: "
+    "**bold** key terms, use bullet points for lists, and short paragraphs. "
+    "Structure: lead with your key insight or recommendation, then supporting details. "
     "Cite specific facts from the document context — don't ask questions the doc already answers. "
     "You'll get follow-up turns — don't try to cover everything now. "
     "End with → your single most important takeaway, question, or recommendation."
 )
 
-# Focused mode constraint — single agent, thorough + well-formatted
+# Action-bias constraint — reduces endless clarification loops
+_ACTION_BIAS_CONSTRAINT = (
+    "\n\nACTION BIAS RULE: Do NOT ask multiple clarifying questions across turns. "
+    "If information is missing, assume reasonable defaults, state your assumptions clearly, "
+    "and deliver a concrete answer or plan. You may include ONE focused follow-up question "
+    "at the end if truly critical information is missing — but always provide a usable "
+    "output first. Never respond with ONLY questions and no content."
+)
+
+# Frustration-mode constraint — injected when user shows impatience signals
+_FRUSTRATION_MODE_CONSTRAINT = (
+    "\n\nURGENT: The user has signalled impatience or frustration. Switch to DELIVERY MODE "
+    "immediately. Do NOT ask any more questions. Instead:\n"
+    "1. Use whatever information you already have (plus reasonable assumptions)\n"
+    "2. Produce an actionable, concrete output NOW\n"
+    "3. Clearly label any assumptions you made\n"
+    "4. The user wants RESULTS, not more discussion"
+)
+
+# Turn-awareness thresholds
+_DELIVERY_TURN_THRESHOLD = 3  # After this many user messages, prioritise delivery
+
+# Focused mode constraint — single agent, richer formatting allowed
 _FOCUSED_CONSTRAINT = (
     "\n\nYou are the sole active agent in a focused workroom session. "
     "Use clear formatting to make your response easy to scan: "
@@ -82,6 +98,7 @@ class CustomAgentRunner:
         concise: bool = False,
         focused: bool = False,
         doc_context: str = "",
+        frustration_detected: bool = False,
     ) -> str:
         # ---- Build dynamic instructions ----
         instructions = self.agent_def.system_prompt
@@ -89,8 +106,24 @@ class CustomAgentRunner:
             instructions += _FOCUSED_CONSTRAINT
         elif concise:
             instructions += _CONCISE_CONSTRAINT
-        else:
-            instructions += _FORMAT_INSTRUCTION
+
+        # Always add action-bias to reduce clarification loops
+        if concise or focused:
+            instructions += _ACTION_BIAS_CONSTRAINT
+
+        # Turn-awareness: after enough user messages, push agents to deliver
+        user_turn_count = sum(1 for m in (conversation_history or []) if m.get("role") == "user")
+        if user_turn_count >= _DELIVERY_TURN_THRESHOLD:
+            instructions += (
+                f"\n\nTURN AWARENESS: The user has sent {user_turn_count} messages in this session. "
+                "You MUST deliver concrete, actionable output now — not ask more questions. "
+                "State assumptions and provide a complete answer."
+            )
+
+        # Frustration mode: override to pure delivery
+        if frustration_detected:
+            instructions += _FRUSTRATION_MODE_CONSTRAINT
+
         if doc_context:
             instructions += f"\n\n{doc_context}"
         elif document_context:
@@ -160,6 +193,7 @@ class CustomAgentRunner:
         concise: bool = False,
         focused: bool = False,
         doc_context: str = "",
+        frustration_detected: bool = False,
     ) -> Generator[str, None, None]:
         """Streaming variant of respond(). Yields text chunks as they arrive."""
         # ---- Build dynamic instructions (same as respond) ----
@@ -168,8 +202,24 @@ class CustomAgentRunner:
             instructions += _FOCUSED_CONSTRAINT
         elif concise:
             instructions += _CONCISE_CONSTRAINT
-        else:
-            instructions += _FORMAT_INSTRUCTION
+
+        # Always add action-bias to reduce clarification loops
+        if concise or focused:
+            instructions += _ACTION_BIAS_CONSTRAINT
+
+        # Turn-awareness: after enough user messages, push agents to deliver
+        user_turn_count = sum(1 for m in (conversation_history or []) if m.get("role") == "user")
+        if user_turn_count >= _DELIVERY_TURN_THRESHOLD:
+            instructions += (
+                f"\n\nTURN AWARENESS: The user has sent {user_turn_count} messages in this session. "
+                "You MUST deliver concrete, actionable output now — not ask more questions. "
+                "State assumptions and provide a complete answer."
+            )
+
+        # Frustration mode: override to pure delivery
+        if frustration_detected:
+            instructions += _FRUSTRATION_MODE_CONSTRAINT
+
         if doc_context:
             instructions += f"\n\n{doc_context}"
         elif document_context:
