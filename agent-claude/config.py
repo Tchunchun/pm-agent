@@ -84,3 +84,31 @@ def make_openai_client():
         )
     from openai import OpenAI
     return OpenAI(api_key=OPENAI_API_KEY, max_retries=5, timeout=60.0)
+
+
+def get_agno_model(max_tokens: int | None = None):
+    """
+    Return an Agno model instance configured for the current environment.
+
+    Uses AzureOpenAI when AZURE_OPENAI_ENDPOINT is set, otherwise standard
+    OpenAI. The model/deployment name comes from the MODEL constant.
+    """
+    if AZURE_OPENAI_ENDPOINT:
+        from agno.models.azure import AzureOpenAI as AgnoAzure
+        _key = AZURE_OPENAI_KEY or OPENAI_API_KEY
+        return AgnoAzure(
+            id=MODEL,
+            azure_endpoint=AZURE_OPENAI_ENDPOINT,
+            azure_deployment=MODEL,
+            api_key=_key,
+            api_version=AZURE_OPENAI_API_VERSION,
+            max_retries=5,
+            max_completion_tokens=max_tokens,
+        )
+    from agno.models.openai import OpenAIChat
+    return OpenAIChat(
+        id=MODEL,
+        api_key=OPENAI_API_KEY,
+        max_retries=5,
+        max_completion_tokens=max_tokens,
+    )

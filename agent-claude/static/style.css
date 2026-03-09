@@ -102,10 +102,11 @@ html, body, [data-testid="stAppViewContainer"],
   font-weight: var(--weight-medium) !important;
 }
 
-/* Constrain chat input to match the left chat column width (75% of 3:1 split) */
+/* Chat input lives inside the chat column — fill its parent width */
 [data-testid="stChatInput"] {
-  max-width: 75% !important;
-  margin-top: -0.5rem !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  position: relative !important;
 }
 
 [data-testid="stChatInput"] textarea {

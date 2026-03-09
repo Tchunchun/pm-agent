@@ -21,7 +21,6 @@ from agents import Orchestrator
 from agents.topic_classifier import TopicClassifier
 from agents.facilitator_agent import FacilitatorAgent
 from agents.agent_designer import AgentDesigner
-from skills.bootstrap import bootstrap_skills
 
 
 # ------------------------------------------------------------------ #
@@ -73,8 +72,6 @@ _auth_user = require_auth()  # Shows login page & st.stop() if not authed
 def _init_state():
     if "storage" not in st.session_state:
         st.session_state.storage = StorageManager()
-        # Bootstrap skills once, after storage is ready
-        bootstrap_skills(storage=st.session_state.storage)
     if "orchestrator" not in st.session_state:
         st.session_state.orchestrator = Orchestrator(st.session_state.storage)
     if "messages" not in st.session_state:
@@ -214,13 +211,13 @@ def _agent_display_label(agent_dict: dict) -> str:
 
 def _parse_meeting_context(raw_context: str, topic: str) -> dict:
     """
-    Use OpenAI to extract a structured meeting objective and desired outcome
+    Use Agno Agent to extract a structured meeting objective and desired outcome
     from freeform user context. Returns {"objective": str, "outcome": str}.
     """
-    from config import MODEL, make_openai_client
+    from agno.agent import Agent
+    from config import get_agno_model
     import json as _json
 
-    client = make_openai_client()
     prompt = f"""You are a TPM assistant. The user wants to set up a meeting workroom.
 
 Topic: {topic}
@@ -238,15 +235,14 @@ Return ONLY valid JSON, no markdown fences:
 {{"objective": "...", "outcome": "..."}}"""
 
     try:
-        resp = client.chat.completions.create(
-            model=MODEL,
-            max_completion_tokens=400,
-            messages=[
-                {"role": "system", "content": "You extract structured meeting metadata from freeform text. Return only JSON."},
-                {"role": "user", "content": prompt},
-            ],
+        agent = Agent(
+            name="MeetingContextParser",
+            model=get_agno_model(max_tokens=400),
+            instructions="You extract structured meeting metadata from freeform text. Return only JSON.",
+            markdown=False,
         )
-        raw = resp.choices[0].message.content.strip()
+        result = agent.run(input=prompt)
+        raw = (result.content or "").strip()
         parsed = _json.loads(raw)
         return {
             "objective": parsed.get("objective", raw_context[:300]),
@@ -739,6 +735,40 @@ if page == "chat":
                             st.session_state["wr_mention_prefix"] = f"@{_ak} "
                             st.rerun()
 
+                # ---- Chat input (inside chat column so it stays with the chat window) ----
+                _new_mention = st.session_state.pop("wr_mention_prefix", "")
+                if _new_mention:
+                    st.session_state["wr_mention_active"] = _new_mention
+
+                _mention_active = st.session_state.get("wr_mention_active", "")
+
+                disc_hint = {
+                    "open": "Type a message… or select an agent above",
+                    "round_table": "Type a message, then click 🔄 Round Table in the side panel",
+                    "focused": f"Talking to {active_ws.focused_agent or 'focused agent'} — type your message",
+                }
+
+                # Show mention indicator above the unified chat input
+                if _mention_active:
+                    _agent_key = _mention_active.strip().lstrip("@")
+                    _a_map = _agent_label_map()
+                    _a_display = _a_map.get(_agent_key, _agent_key)
+                    _ind_col1, _ind_col2 = st.columns([6, 1])
+                    with _ind_col1:
+                        st.caption(f"💬 Directing to **{_a_display}** — type your question below")
+                    with _ind_col2:
+                        if st.button("✕", key="wr_mention_cancel", help="Cancel @mention"):
+                            st.session_state.pop("wr_mention_active", None)
+                            st.rerun()
+
+                _placeholder = f"Ask {_a_display}…" if _mention_active else disc_hint.get(active_ws.discussion_mode, "Type a message…")
+                wr_input = st.chat_input(_placeholder, key="wr_chat_input")
+
+                # Prepend @mention prefix to the message if mention mode is active
+                if wr_input and _mention_active:
+                    wr_input = f"{_mention_active}{wr_input}"
+                    st.session_state.pop("wr_mention_active", None)
+
             # ---- Right panel: Controls + references ----
             with _panel_col:
                 # ---- 🎯 Session context (always visible) ----
@@ -824,22 +854,7 @@ if page == "chat":
                         (m["content"] for m in reversed(wmsgs) if m.get("role") == "user"), ""
                     )
                     if last_user_msg:
-                        with st.spinner("All agents thinking…"):
-                            result = orchestrator.round_table(
-                                last_user_msg,
-                                active_agents=active_ws.active_agents,
-                                conversation_history=wmsgs,
-                                document_context=st.session_state.workroom_active_document,
-                                workroom=active_ws,
-                            )
-                        wmsgs.append({
-                            "role": "assistant",
-                            "content": result["text"],
-                            "agent": "[Round Table]",
-                            "multi_response": result.get("multi_response"),
-                        })
-                        _save_workroom_messages(active_ws.id, wmsgs)
-                        st.session_state.workroom_messages = wmsgs
+                        st.session_state.wr_pending_input = last_user_msg
                         st.rerun()
 
                 if st.button(
@@ -995,42 +1010,6 @@ if page == "chat":
                     with st.expander("📚 Past Outputs", expanded=False):
                         st.caption("No outputs generated yet.")
 
-            # ---- Chat input (MUST be outside st.columns) ----
-            # Mention mode: set by clicking an agent button, stays active until Send/Cancel
-            _new_mention = st.session_state.pop("wr_mention_prefix", "")
-            if _new_mention:
-                # Fresh click — store as active mention
-                st.session_state["wr_mention_active"] = _new_mention
-
-            _mention_active = st.session_state.get("wr_mention_active", "")
-
-            disc_hint = {
-                "open": "Type a message… or select an agent above",
-                "round_table": "Type a message, then click 🔄 Round Table in the side panel",
-                "focused": f"Talking to {active_ws.focused_agent or 'focused agent'} — type your message",
-            }
-
-            # Show mention indicator above the unified chat input
-            if _mention_active:
-                _agent_key = _mention_active.strip().lstrip("@")
-                _a_map = _agent_label_map()
-                _a_display = _a_map.get(_agent_key, _agent_key)
-                _ind_col1, _ind_col2 = st.columns([6, 1])
-                with _ind_col1:
-                    st.caption(f"💬 Directing to **{_a_display}** — type your question below")
-                with _ind_col2:
-                    if st.button("✕", key="wr_mention_cancel", help="Cancel @mention"):
-                        st.session_state.pop("wr_mention_active", None)
-                        st.rerun()
-
-            _placeholder = f"Ask {_a_display}…" if _mention_active else disc_hint.get(active_ws.discussion_mode, "Type a message…")
-            wr_input = st.chat_input(_placeholder, key="wr_chat_input")
-
-            # Prepend @mention prefix to the message if mention mode is active
-            if wr_input and _mention_active:
-                wr_input = f"{_mention_active}{wr_input}"
-                st.session_state.pop("wr_mention_active", None)
-
             # ---- Process chat input (outside columns) ----
             # Two-phase approach: Phase 1 saves user msg + reruns so it appears
             # immediately. Phase 2 (next render) processes the agent response.
@@ -1045,66 +1024,161 @@ if page == "chat":
             # Phase 2: pending input exists — get agent response
             _pending = st.session_state.pop("wr_pending_input", None)
             if _pending:
+                _streamed = False
                 try:
-                    with st.spinner("Thinking…"):
-                        if active_ws.discussion_mode == "round_table":
-                            result = orchestrator.round_table(
+                    if active_ws.discussion_mode == "round_table":
+                        # Round table: stream each agent sequentially
+                        from agents.orchestrator import _is_decision
+                        from models.workroom import Decision as WRDecision
+                        multi_response = []
+                        for _rt_key in active_ws.active_agents:
+                            _rt_stream = orchestrator.route_by_key_stream(
+                                _rt_key,
                                 _pending,
-                                active_agents=active_ws.active_agents,
                                 conversation_history=wmsgs[:-1],
                                 document_context=st.session_state.workroom_active_document,
+                                active_agents=active_ws.active_agents,
                                 workroom=active_ws,
                             )
+                            if _rt_stream:
+                                _rt_label, _rt_gen = _rt_stream
+                                with chat_box.chat_message("assistant"):
+                                    if _rt_label:
+                                        st.markdown(f'<div class="agent-avatar">{_rt_label}</div>', unsafe_allow_html=True)
+                                    _rt_text = st.write_stream(_rt_gen)
+                                multi_response.append({"agent": _rt_label, "text": _rt_text or ""})
+                                if _is_decision(_rt_text or ""):
+                                    storage.add_workroom_decision(
+                                        active_ws.id,
+                                        WRDecision(content=(_rt_text or "")[:300], context=_pending[:200])
+                                    )
+                        _streamed = True
+                        if multi_response:
+                            parts = [f"**{r['agent']}**\n\n{r['text']}" for r in multi_response]
                             wmsgs.append({
                                 "role": "assistant",
-                                "content": result["text"],
+                                "content": "\n\n---\n\n".join(parts),
                                 "agent": "[Round Table]",
-                                "multi_response": result.get("multi_response"),
+                                "multi_response": multi_response,
                             })
-                        elif active_ws.discussion_mode == "focused" and active_ws.focused_agent:
-                            result = orchestrator._route_by_key(
-                                active_ws.focused_agent,
-                                _pending,
-                                conversation_history=wmsgs[:-1],
-                                document_context=st.session_state.workroom_active_document,
-                                active_agents=active_ws.active_agents,
-                            )
+
+                    elif active_ws.discussion_mode == "focused" and active_ws.focused_agent:
+                        # Focused mode: stream single agent
+                        stream_result = orchestrator.route_by_key_stream(
+                            active_ws.focused_agent,
+                            _pending,
+                            conversation_history=wmsgs[:-1],
+                            document_context=st.session_state.workroom_active_document,
+                            active_agents=active_ws.active_agents,
+                            workroom=active_ws,
+                        )
+                        if stream_result:
+                            agent_label, gen = stream_result
+                            with chat_box.chat_message("assistant"):
+                                if agent_label:
+                                    st.markdown(f'<div class="agent-avatar">{agent_label}</div>', unsafe_allow_html=True)
+                                full_text = st.write_stream(gen)
+                            _streamed = True
                             from agents.orchestrator import _is_decision
-                            if _is_decision(result.get("text", "")):
+                            if _is_decision(full_text or ""):
                                 from models.workroom import Decision as WRDecision
                                 storage.add_workroom_decision(
                                     active_ws.id,
-                                    WRDecision(content=result["text"][:300], context=_pending[:200])
+                                    WRDecision(content=(full_text or "")[:300], context=_pending[:200])
                                 )
                             wmsgs.append({
                                 "role": "assistant",
-                                "content": result.get("text", ""),
-                                "agent": result.get("agent", ""),
+                                "content": full_text or "",
+                                "agent": agent_label,
                             })
                         else:
-                            result = orchestrator.handle_message(
-                                _pending,
-                                file_bytes=None,
-                                filename="",
-                                date=today_str,
-                                document_context=st.session_state.workroom_active_document,
-                                conversation_history=wmsgs[:-1],
-                                active_agents=active_ws.active_agents,
-                                workroom=active_ws,
-                            )
+                            # Fallback to batch
+                            with st.spinner("Thinking…"):
+                                result = orchestrator._route_by_key(
+                                    active_ws.focused_agent,
+                                    _pending,
+                                    conversation_history=wmsgs[:-1],
+                                    document_context=st.session_state.workroom_active_document,
+                                    active_agents=active_ws.active_agents,
+                                )
+                                from agents.orchestrator import _is_decision
+                                if _is_decision(result.get("text", "")):
+                                    from models.workroom import Decision as WRDecision
+                                    storage.add_workroom_decision(
+                                        active_ws.id,
+                                        WRDecision(content=result["text"][:300], context=_pending[:200])
+                                    )
+                                wmsgs.append({
+                                    "role": "assistant",
+                                    "content": result.get("text", ""),
+                                    "agent": result.get("agent", ""),
+                                })
+
+                    else:
+                        # Open mode: stream all selected agents sequentially
+                        stream_results = orchestrator.smart_route_stream(
+                            _pending,
+                            active_agents=active_ws.active_agents,
+                            conversation_history=wmsgs[:-1],
+                            document_context=st.session_state.workroom_active_document,
+                            workroom=active_ws,
+                        )
+                        if stream_results:
                             from agents.orchestrator import _is_decision
                             from models.workroom import Decision as WRDecision
-                            if _is_decision(result.get("text", "")):
-                                storage.add_workroom_decision(
-                                    active_ws.id,
-                                    WRDecision(content=result["text"][:300], context=_pending[:200])
+                            multi_response = []
+                            for agent_label, gen in stream_results:
+                                with chat_box.chat_message("assistant"):
+                                    if agent_label:
+                                        st.markdown(f'<div class="agent-avatar">{agent_label}</div>', unsafe_allow_html=True)
+                                    full_text = st.write_stream(gen)
+                                multi_response.append({"agent": agent_label, "text": full_text or ""})
+                                if _is_decision(full_text or ""):
+                                    storage.add_workroom_decision(
+                                        active_ws.id,
+                                        WRDecision(content=(full_text or "")[:300], context=_pending[:200])
+                                    )
+                            _streamed = True
+                            if len(multi_response) == 1:
+                                wmsgs.append({
+                                    "role": "assistant",
+                                    "content": multi_response[0]["text"],
+                                    "agent": multi_response[0]["agent"],
+                                })
+                            else:
+                                parts = [f"**{r['agent']}**\n\n{r['text']}" for r in multi_response]
+                                wmsgs.append({
+                                    "role": "assistant",
+                                    "content": "\n\n---\n\n".join(parts),
+                                    "agent": "[Open Discussion]",
+                                    "multi_response": multi_response,
+                                })
+                        else:
+                            # Routing error → batch fallback
+                            with st.spinner("Thinking…"):
+                                result = orchestrator.handle_message(
+                                    _pending,
+                                    file_bytes=None,
+                                    filename="",
+                                    date=today_str,
+                                    document_context=st.session_state.workroom_active_document,
+                                    conversation_history=wmsgs[:-1],
+                                    active_agents=active_ws.active_agents,
+                                    workroom=active_ws,
                                 )
-                            wmsgs.append({
-                                "role": "assistant",
-                                "content": result.get("text", ""),
-                                "agent": result.get("agent", ""),
-                                "multi_response": result.get("multi_response"),
-                            })
+                                from agents.orchestrator import _is_decision
+                                from models.workroom import Decision as WRDecision
+                                if _is_decision(result.get("text", "")):
+                                    storage.add_workroom_decision(
+                                        active_ws.id,
+                                        WRDecision(content=result["text"][:300], context=_pending[:200])
+                                    )
+                                wmsgs.append({
+                                    "role": "assistant",
+                                    "content": result.get("text", ""),
+                                    "agent": result.get("agent", ""),
+                                    "multi_response": result.get("multi_response"),
+                                })
                 except Exception as _chat_err:
                     import logging
                     logging.getLogger(__name__).exception("Workroom chat error: %s", _chat_err)

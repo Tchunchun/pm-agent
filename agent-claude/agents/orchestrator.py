@@ -19,11 +19,12 @@ Routing table:
 """
 
 import re
-from typing import Optional
+from typing import Generator, Optional
 
-from openai import OpenAI  # kept for type hints only
+from agno.agent import Agent
+from agno.models.message import Message
 
-from config import MODEL, make_openai_client
+from config import get_agno_model
 from storage import StorageManager
 from agents.custom_agent_runner import CustomAgentRunner
 from agents.facilitator_agent import FacilitatorAgent
@@ -241,7 +242,6 @@ class Orchestrator:
 
     def __init__(self, storage: StorageManager):
         self.storage = storage
-        self._openai = make_openai_client()
         # Custom agent runners — loaded lazily from storage
         self._custom_runners: dict[str, CustomAgentRunner] = {}
 
@@ -274,26 +274,28 @@ class Orchestrator:
         truncated = doc_text[:12000]
 
         try:
-            response = self._openai.chat.completions.create(
-                model=MODEL,
-                max_completion_tokens=1200,
-                messages=[
-                    {"role": "system", "content": (
-                        "You are a document summarizer for a TPM working session. "
-                        "Produce a structured summary that captures ALL key facts, "
-                        "requirements, numbers, names, and technical details. "
-                        "This summary will be the ONLY context agents see, so be thorough "
-                        "but concise. Use bullet points. Keep under 2000 chars."
-                    )},
-                    {"role": "user", "content": (
-                        f"Summarize this document: **{filename}**\n\n"
-                        f"---\n{truncated}\n---\n\n"
-                        "Include: key stakeholders, problem statement, requirements, "
-                        "data/technical details, open questions, and any specific asks."
-                    )},
-                ],
+            agent = Agent(
+                name="DocumentSummarizer",
+                model=get_agno_model(max_tokens=1200),
+                instructions=(
+                    "You are a document summarizer for a TPM working session. "
+                    "Produce a structured summary that captures ALL key facts, "
+                    "requirements, numbers, names, and technical details. "
+                    "This summary will be the ONLY context agents see, so be thorough "
+                    "but concise. Use bullet points. Keep under 2000 chars."
+                ),
+                markdown=True,
+                add_datetime_to_context=False,
             )
-            summary = response.choices[0].message.content.strip()
+            result = agent.run(
+                input=(
+                    f"Summarize this document: **{filename}**\n\n"
+                    f"---\n{truncated}\n---\n\n"
+                    "Include: key stakeholders, problem statement, requirements, "
+                    "data/technical details, open questions, and any specific asks."
+                ),
+            )
+            summary = result.content.strip() if isinstance(result.content, str) else str(result.content).strip()
         except Exception as exc:
             import logging
             logging.getLogger(__name__).exception("Document summarization API error: %s", exc)
@@ -326,7 +328,7 @@ class Orchestrator:
             return self._custom_runners[key]
         for ca in self.storage.list_custom_agents():
             if ca.key == key:
-                runner = CustomAgentRunner(ca)
+                runner = CustomAgentRunner(ca, storage=self.storage)
                 self._custom_runners[key] = runner
                 return runner
         return None
@@ -482,7 +484,7 @@ class Orchestrator:
         if len(doc_text) > 12000:
             truncated += "\n\n[...document truncated for length...]"
 
-        messages = [{"role": "system", "content": DOCUMENT_QA_SYSTEM}]
+        messages = []
 
         # Include recent conversation for context (skip file-heavy messages)
         if conversation_history:
@@ -490,25 +492,28 @@ class Orchestrator:
                 role = msg.get("role", "user")
                 content = msg.get("content", "")
                 if content and role in ("user", "assistant"):
-                    messages.append({"role": role, "content": content})
+                    messages.append(Message(role=role, content=content))
 
         # Final turn: document + question
-        messages.append({
-            "role": "user",
-            "content": (
+        messages.append(Message(
+            role="user",
+            content=(
                 f"Document: **{filename}**\n\n"
                 f"---\n{truncated}\n---\n\n"
                 f"Question: {question}"
             ),
-        })
+        ))
 
         try:
-            response = self._openai.chat.completions.create(
-                model=MODEL,
-                max_completion_tokens=1500,
-                messages=messages,
+            agent = Agent(
+                name="DocumentQA",
+                model=get_agno_model(max_tokens=1500),
+                instructions=DOCUMENT_QA_SYSTEM,
+                markdown=True,
+                add_datetime_to_context=False,
             )
-            answer = response.choices[0].message.content.strip()
+            result = agent.run(input=messages)
+            answer = result.content.strip() if isinstance(result.content, str) else str(result.content).strip()
         except Exception as exc:
             import logging
             logging.getLogger(__name__).exception("Document Q&A API error: %s", exc)
@@ -589,14 +594,70 @@ class Orchestrator:
             label = f"[{runner.agent_def.emoji} {runner.agent_def.label}]"
             # In workroom mode, pass the summary as doc_context string instead of raw document_context
             # to save tokens. The summary is already computed and cached.
+            is_focused = is_workroom and workroom and workroom.discussion_mode == "focused"
             result = runner.respond(message, conversation_history, document_context,
-                                    concise=is_workroom, doc_context=doc_block)
+                                    concise=is_workroom and not is_focused,
+                                    focused=is_focused,
+                                    doc_context=doc_block)
             return self._respond(label, result)
 
         return self._respond(
             "[System]",
             f"Agent `{key}` not found. Check the spelling or create a custom agent with that key.",
         )
+
+    def route_by_key_stream(
+        self,
+        key: str,
+        message: str,
+        conversation_history: Optional[list],
+        document_context: Optional[dict],
+        active_agents: Optional[list],
+        workroom: Optional[WorkroomSession] = None,
+    ) -> tuple[str, Generator[str, None, None]] | None:
+        """Streaming variant of _route_by_key(). Returns (agent_label, generator) or None."""
+        if not self._agent_allowed(key, active_agents):
+            return None
+
+        is_workroom = workroom is not None
+
+        # Build document context block (summary) for agent injection
+        doc_block = self._get_doc_context_block(document_context) if is_workroom else ""
+
+        # Team-awareness
+        if is_workroom and active_agents and len(active_agents) > 1:
+            other_agents = [a for a in active_agents if a != key]
+            if other_agents:
+                team_block = (
+                    f"\n\n👥 Team context: Other agents present: {', '.join(other_agents)}. "
+                    f"Focus on YOUR unique specialty — do not duplicate what "
+                    f"{', '.join(other_agents)} would cover. "
+                    "If a point overlaps with another agent's area, mention it briefly and move on."
+                )
+                doc_block = team_block + doc_block
+
+        # Facilitator: fall back to non-streaming (yields full text)
+        if key == "facilitator":
+            fac = FacilitatorAgent()
+            summary = fac.generate_summary(conversation_history or [], message)
+            def _yield_full():
+                yield summary
+            return "[Facilitator]", _yield_full()
+
+        # Custom agent — use streaming
+        runner = self._get_custom_runner(key)
+        if runner:
+            label = f"[{runner.agent_def.emoji} {runner.agent_def.label}]"
+            is_focused = is_workroom and workroom and workroom.discussion_mode == "focused"
+            gen = runner.respond_stream(
+                message, conversation_history, document_context,
+                concise=is_workroom and not is_focused,
+                focused=is_focused,
+                doc_context=doc_block,
+            )
+            return label, gen
+
+        return None
 
     # ------------------------------------------------------------------ #
     # Smart Route — pick best 1-2 agents instead of round-tabling all   #
@@ -676,15 +737,15 @@ class Orchestrator:
         )
 
         try:
-            resp = self._openai.chat.completions.create(
-                model=MODEL,
-                messages=[
-                    {"role": "system", "content": self.SMART_ROUTE_SYSTEM},
-                    {"role": "user", "content": user_prompt},
-                ],
-                max_completion_tokens=100,
+            router = Agent(
+                name="SmartRouter",
+                model=get_agno_model(max_tokens=100),
+                instructions=self.SMART_ROUTE_SYSTEM,
+                markdown=False,
+                add_datetime_to_context=False,
             )
-            raw = resp.choices[0].message.content.strip()
+            result = router.run(input=user_prompt)
+            raw = result.content.strip() if isinstance(result.content, str) else str(result.content).strip()
             # Parse JSON array from response
             # Handle possible markdown wrapping
             if raw.startswith("```"):
@@ -746,6 +807,87 @@ class Orchestrator:
                 else:
                     result.append({"key": key, "description": f"Agent: {key}"})
         return result
+
+    def smart_route_stream(
+        self,
+        message: str,
+        active_agents: list,
+        conversation_history: Optional[list] = None,
+        document_context: Optional[dict] = None,
+        workroom: Optional[WorkroomSession] = None,
+    ) -> list[tuple[str, Generator[str, None, None]]] | None:
+        """Streaming variant of smart_route().
+
+        Returns a list of (agent_label, generator) tuples — one per selected agent.
+        Each generator yields text chunks for streaming. Agents are meant to be
+        streamed sequentially in the UI.
+        Returns None only on routing error.
+        """
+        import json as _json
+
+        # Open-ended → stream ALL active agents sequentially
+        if self._is_open_ended(message):
+            streams = []
+            for key in (active_agents or []):
+                result = self.route_by_key_stream(
+                    key, message, conversation_history,
+                    document_context, active_agents, workroom=workroom,
+                )
+                if result:
+                    streams.append(result)
+            return streams or None
+
+        all_opts = self._build_agent_descriptions(active_agents)
+        agent_desc_text = "\n".join(
+            f"- {a['key']}: {a['description']}" for a in all_opts
+        )
+
+        recent = ""
+        if conversation_history:
+            for m in conversation_history[-4:]:
+                role = m.get("role", "user")
+                content = m.get("content", "")[:200]
+                recent += f"{role}: {content}\n"
+
+        user_prompt = (
+            f"Available agents:\n{agent_desc_text}\n\n"
+            f"Recent conversation:\n{recent}\n"
+            f"User message: {message}\n\n"
+            f"Which agent(s) should respond? Return JSON array of keys."
+        )
+
+        try:
+            router = Agent(
+                name="SmartRouter",
+                model=get_agno_model(max_tokens=100),
+                instructions=self.SMART_ROUTE_SYSTEM,
+                markdown=False,
+                add_datetime_to_context=False,
+            )
+            result = router.run(input=user_prompt)
+            raw = result.content.strip() if isinstance(result.content, str) else str(result.content).strip()
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+            selected = _json.loads(raw)
+
+            if not isinstance(selected, list):
+                return None
+            selected = [k for k in selected if k in active_agents]
+            if not selected:
+                return None
+        except Exception:
+            return None
+
+        # Stream all selected agents (1 or more)
+        streams = []
+        for key in selected:
+            result = self.route_by_key_stream(
+                key, message, conversation_history,
+                document_context, active_agents, workroom=workroom,
+            )
+            if result:
+                streams.append(result)
+        return streams or None
 
     # ------------------------------------------------------------------ #
     # Round Table — every active agent responds in parallel              #
@@ -920,15 +1062,15 @@ class Orchestrator:
         user_prompt += f"Conversation transcript:\n\n{transcript}"
 
         try:
-            response = self._openai.chat.completions.create(
-                model=MODEL,
-                max_completion_tokens=3000,
-                messages=[
-                    {"role": "system", "content": GENERATE_OUTPUT_SYSTEM},
-                    {"role": "user", "content": user_prompt},
-                ],
+            synth = Agent(
+                name="OutputGenerator",
+                model=get_agno_model(max_tokens=3000),
+                instructions=GENERATE_OUTPUT_SYSTEM,
+                markdown=True,
+                add_datetime_to_context=False,
             )
-            content = response.choices[0].message.content.strip()
+            result = synth.run(input=user_prompt)
+            content = result.content.strip() if isinstance(result.content, str) else str(result.content).strip()
         except Exception as exc:
             import logging
             logging.getLogger(__name__).exception("generate_output API error: %s", exc)
