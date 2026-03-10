@@ -64,9 +64,13 @@ Living tracker — updated after every execution. Cross-referenced with `docs/DE
 | Agent Category Overhaul | ✅ Done | 4-category system (pm_workflow/ai_product/career/life) + dynamic sections; category sync migration; manual create form updated | 2026-02-27 |
 | Agent Hub Cleanup + Prompt Divergence Fix | ✅ Done | Removed intake/analyst/researcher/writer from Agent Hub (solo-chat only); planner + challenger system prompts enriched for workroom conversational use | 2026-02-27 |
 | Skills Framework | ✅ Done | `skills/tools.py` — 3 Agno tool functions (get_current_date, search_backlog, get_recent_insights); resolved by CustomAgentRunner._resolve_tools() | 2026-02-28 |
+| Web Connectivity (Search + Maps) | ✅ Done | Agno built-in toolkits: `WebSearchTools` (DuckDuckGo, free), `GoogleMapTools` (needs API key); toolkit factory dict in `_resolve_tools()`; Researcher agent wired with `web_search` | 2026-03-09 |
 | Google OAuth Authentication | ✅ Done | `auth/` package: Google OAuth2 login, user store, session gating; on `feat/google-auth` branch; backward compatible (disabled without env vars) | 2026-02-28 |
 | Agno Framework Adoption | ✅ Done | All LLM calls migrated from raw OpenAI SDK to Agno Agent framework (v2.5.8); `config.get_agno_model()` factory; standalone agent files deleted (dead code); old Skill class hierarchy replaced | 2026-03-01 |
 | Streaming Responses | ✅ Done | Token-by-token streaming for single-agent workroom responses (focused mode + smart_route single-pick); `st.write_stream()` for live UI; round table/multi-agent stays batch | 2026-03-09 |
+| Agent Chaining (Research-First Pipeline) | ✅ Done | Smart router detects when real-world facts are needed → Researcher runs silently first → output injected as grounded context into domain expert(s); eliminates conflicting parallel responses; works for both streaming and batch paths | 2026-03-09 |
+| Summarize → Writer Routing | ✅ Done | "Summarize/recap/wrap-up" requests now route to Writer only (not round-table). Fixed `_is_open_ended()` false positives, added WRITE_PATTERNS, added synthesis rule to SmartRouter prompt. Writer prompt enriched with context-aware summarization: scans full chat history, detects output format (itinerary/brief/timeline), merges multi-agent contributions, flags gaps. | 2026-03-09 |
+| Facilitator Empty Response Fix | ✅ Done | `gpt-5-mini` reasoning model consumed all `max_completion_tokens` on internal reasoning, leaving 0 for visible output. Increased Facilitator 600/700→2000, SmartRouter 500→1500, DocumentSummarizer 1200→3000, DocumentQA 1500→3000. Verified: facilitator now produces 786-char summaries. | 2026-03-09 |
 
 ---
 

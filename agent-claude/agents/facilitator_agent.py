@@ -28,7 +28,7 @@ Your role:
 """
 
 
-def _run_facilitator(prompt: str, max_tokens: int = 700) -> str:
+def _run_facilitator(prompt: str, max_tokens: int = 2000) -> str:
     """Create a one-shot facilitator agent and run it."""
     agent = Agent(
         name="Facilitator",
@@ -79,7 +79,7 @@ Write the opening message. It should:
 Keep the total length under 200 words."""
 
         try:
-            return _run_facilitator(prompt, max_tokens=700)
+            return _run_facilitator(prompt, max_tokens=2000)
         except Exception as exc:
             logger.exception("FacilitatorAgent.open_session failed: %s", exc)
             return (
@@ -130,7 +130,7 @@ Write a brief facilitator check-in (under 150 words) that:
 Use markdown formatting."""
 
         try:
-            return _run_facilitator(prompt, max_tokens=600)
+            return _run_facilitator(prompt, max_tokens=2000)
         except Exception as exc:
             logger.exception("FacilitatorAgent.generate_summary failed: %s", exc)
             return "**Facilitator check-in:** Let's pause and review progress. What has been decided so far, and what still needs resolution?"

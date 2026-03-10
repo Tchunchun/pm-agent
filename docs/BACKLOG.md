@@ -51,6 +51,19 @@ Rerun `python3 Tests/eval_workroom.py` after each change to verify quality/perf.
 **Expected gain:** Shorter, more focused combined responses.
 **Risk:** Adds post-processing latency. May remove legitimate agreement signals.
 
+### 7. Google Maps integration
+**Problem:** No location-aware capabilities (place search, directions, geocoding).
+**Approach:** Add `"google_maps"` entry to `_TOOLKIT_FACTORIES` in `custom_agent_runner.py` using Agno's built-in `GoogleMapTools` (from `agno.tools.google.maps`). Requires `GOOGLE_MAPS_API_KEY` env var + `pip install googlemaps google-maps-places`. Use `include_tools=["search_places", "get_directions", "geocode_address"]` to limit tool count. Assign to Planner or a new Navigator agent.
+**Expected gain:** Location-aware planning — find venues, get directions, geocode addresses.
+**Risk:** Adds 3 tool definitions per agent. Needs paid Google API key. Low priority unless location use cases arise.
+
+### 8. Dynamic per-message tool injection (Option C)
+**Problem:** Currently tools are statically assigned to agents via `skill_names`. This means every message to the Researcher triggers web search tool availability, even when no search is needed.
+**Approach:** Use Agno's Callable Factory pattern (`tools=my_factory_function`). The Orchestrator detects "this message needs web search" and injects `WebSearchTools` into whichever agent it routes to, just for that message. No agent has tools by default — tools are injected contextually.
+**Expected gain:** Any agent can search the web when needed; no agent wastes context on unnecessary tool definitions. Most flexible and elegant pattern.
+**Risk:** More complex routing logic. Requires extending Orchestrator with intent→tool mapping. Overkill until the project has 5+ toolkits.
+**Prereq:** Current Option A implementation (toolkit factory dict) is the stepping stone. Migrate when toolkit count grows.
+
 ---
 
 ## Evaluation Baseline (2026-02-28)

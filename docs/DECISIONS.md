@@ -365,3 +365,94 @@ CustomAgent(key="my_agent", ..., skill_names=["get_current_date", "search_backlo
 **Status:** Executed
 
 **Status:** Executed
+
+## 2026-03-09 — Web Connectivity: Web Search & Google Maps via Agno Toolkits
+
+**Decision:** Enable web connectivity using Agno's built-in toolkits (`WebSearchTools`, `GoogleMapTools`) instead of building custom wrappers. Use Option A: only the Researcher agent receives `web_search` tools; Google Maps available to agents via `skill_names` configuration.
+
+**Changes:**
+
+1. **Toolkit factory in `_resolve_tools()`:** Added `_build_toolkit_factories()` and `_TOOLKIT_FACTORIES` dict to `custom_agent_runner.py`. Maps `"web_search"` → `WebSearchTools(cache_results=True)` and `"google_maps"` → `GoogleMapTools(include_tools=[...], cache_results=True)`. Agno `Agent(tools=[...])` accepts both plain functions and Toolkit objects. Adding a future integration (Jira, Slack, GitHub) = one entry in this dict.
+
+2. **Researcher agent wired with web search:** Added `skill_names=["web_search", "search_backlog", "get_recent_insights"]` to both `default_agents.py` and live `custom_agents.json`. Updated system prompt to instruct the agent when to use web search vs. general knowledge.
+
+3. **Dependencies:** Added `ddgs>=6.0` (for `WebSearchTools` — DuckDuckGo meta-search, free, no API key) and `googlemaps>=4.10` (for `GoogleMapTools` — requires `GOOGLE_MAPS_API_KEY`).
+
+4. **Config:** Added `GOOGLE_MAPS_API_KEY` to `config.py`. Web search works out of the box with no key.
+
+**Rationale:** Agno ships 120+ pre-built toolkits. Building custom wrappers would duplicate tested, cached, filterable code. The toolkit factory dict provides the same scalability as a custom registry with zero new files.
+
+**Scope:**
+- Modified: `agent-claude/agents/custom_agent_runner.py` — `_build_toolkit_factories()`, `_TOOLKIT_FACTORIES`, refactored `_resolve_tools()`
+- Modified: `agent-claude/agents/default_agents.py` — Researcher agent: added `skill_names`, updated description + system prompt
+- Modified: `agent-claude/data/custom_agents.json` — live Researcher agent updated
+- Modified: `agent-claude/config.py` — added `GOOGLE_MAPS_API_KEY`
+- Modified: `agent-claude/requirements.txt` — added `ddgs>=6.0`, `googlemaps>=4.10`
+
+**Status:** Executed
+
+---
+
+## 2026-03-09 — Fix Streaming: Reasoning Model Token Budget
+
+**Decision:** Increase `max_tokens` for internal utility agents (SmartRouter, MeetingContextParser) to accommodate reasoning models (gpt-5-mini / o-series) that consume tokens for chain-of-thought before generating output.
+
+**Rationale:** After upgrading to `gpt-5-mini`, the SmartRouter's `max_tokens=100` was entirely consumed by internal reasoning tokens (100 reasoning + 0 output), producing empty `.content` on every call. This caused `smart_route_stream()` to always return `None`, falling back to the batch (non-streaming) code path — making it appear that streaming was broken. The MeetingContextParser at `max_tokens=400` was similarly at risk.
+
+**Changes:**
+- SmartRouter in `smart_route()`: 100 → 500
+- SmartRouter in `smart_route_stream()`: 100 → 500
+- MeetingContextParser in `app.py`: 400 → 800
+
+**Scope:**
+- Modified: `agent-claude/agents/orchestrator.py` — both SmartRouter instances
+- Modified: `agent-claude/app.py` — MeetingContextParser
+
+**Status:** Executed
+
+---
+
+## 2026-03-09 — Agent Chaining: Research-First Pipeline
+
+**Decision:** Implement agent chaining so the Researcher agent runs silently as a data-gathering layer before domain experts respond. When smart_route determines a question needs real-world facts (restaurants, hotels, prices, events, directions), Researcher executes first (with `web_search` tool), then its output is injected as grounded context into the selected domain expert(s). The user only sees the expert's synthesized answer — not the raw Researcher output.
+
+**Rationale:** In the "Plan for weekend" workroom, the Dining Curator (no web_search) and Researcher (has web_search) both responded to "Any restaurants?" in parallel, producing conflicting outputs — generic placeholders from the Curator vs. real venue names from the Researcher. This is a structural problem: domain experts lack factual grounding, while Researcher lacks domain synthesis. Chaining solves both: one search pass feeds all experts, experts synthesize from real data, user sees one coherent answer. This scales to any number of domain agents without per-agent tool configuration.
+
+**Design:**
+- SmartRouter prompt updated to return structured JSON: `{"agents": [...], "needs_research": bool}`
+- New `_run_research_phase()` method runs Researcher silently and returns factual context
+- `smart_route()` and `smart_route_stream()` detect `needs_research` → run research phase → inject output as `research_context` into expert prompts via the existing `doc_context` mechanism
+- Researcher doesn't need to be in `active_agents` — used as infrastructure
+- Works for single agent, mini round-table, and full round-table
+
+**Scope:**
+- Modified: `agent-claude/agents/orchestrator.py` — SMART_ROUTE_SYSTEM prompt, smart_route(), smart_route_stream(), new _run_research_phase()
+- Unchanged: `agents/custom_agent_runner.py`, `models/`, `app.py`, `data/`
+
+---
+
+## 2026-03-09 — Summarize Routing Fix + Writer Context-Awareness
+
+**Decision:** Fix "summarize"/"recap" requests routing to all agents (round-table) instead of Writer. Three changes: (1) Add summarize/recap/wrap-up/consolidate/compile patterns to `WRITE_PATTERNS` for solo-chat intent detection. (2) Fix `_is_open_ended()` to check intent patterns BEFORE the short-message heuristic — messages like "Please summarize the itinerary" (5 words, no ?, no @) were false-positive open-ended. (3) Add `SUMMARIZATION / SYNTHESIS RULE` to `SMART_ROUTE_SYSTEM` prompt so the LLM router sends such requests to Writer only in workroom mode. Additionally, enrich Writer's system prompt with synthesis/summarization instructions: scan full chat history, detect output format from context (itinerary for trips, project brief for projects, meeting summary for meetings), merge/deduplicate multi-agent contributions, include specifics, and flag gaps.
+
+**Rationale:** In the "Plan for weekend" workroom, "Please summarize the itinerary" (MSG 23) went to all 6 agents. The Writer didn't know it should compile the whole conversation into an itinerary format. Root cause was (a) the short-message heuristic in `_is_open_ended()` catching it before intent detection, (b) no summarize patterns in `WRITE_PATTERNS`, (c) SmartRouter had no rule about summarize→Writer, and (d) Writer's prompt only covered drafting communications, not synthesizing conversations.
+
+**Scope:**
+- Modified: `agent-claude/agents/orchestrator.py` — WRITE_PATTERNS (6 new patterns), `_is_open_ended()` (intent check first), SMART_ROUTE_SYSTEM (synthesis routing rule)
+- Modified: `agent-claude/data/custom_agents.json` — Writer description and system_prompt (synthesis instructions, format detection, itinerary template)
+
+**Status:** Executed
+
+---
+
+## 2026-03-09 — Facilitator Empty Responses (max_tokens too low for reasoning model)
+
+**Decision:** Increase `max_completion_tokens` across all low-limit Agent calls to accommodate `gpt-5-mini`'s reasoning token overhead. Facilitator 600/700→2000, SmartRouter 500→1500, DocumentSummarizer 1200→3000, DocumentQA 1500→3000.
+
+**Rationale:** The deployed model is `gpt-5-mini`, a reasoning model that consumes internal reasoning tokens from the `max_completion_tokens` budget. With `max_completion_tokens=600`, the model used all 600 tokens on reasoning, leaving 0 tokens for visible output. This caused the Facilitator to save empty messages (opening, periodic summaries) despite the code path executing correctly. Verified: `output_tokens=600` with `content=""`. After increasing to 2000, the same prompt produced 786 chars of high-quality summary. Custom agents (at 2000) were unaffected because 2000 provides enough headroom.
+
+**Scope:**
+- Modified: `agent-claude/agents/facilitator_agent.py` — `_run_facilitator()` default 700→2000, `open_session()` 700→2000, `generate_summary()` 600→2000
+- Modified: `agent-claude/agents/orchestrator.py` — SmartRouter 500→1500 (×2), DocumentSummarizer 1200→3000, DocumentQA 1500→3000
+
+**Status:** Executed

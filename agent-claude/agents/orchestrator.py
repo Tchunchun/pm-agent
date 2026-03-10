@@ -228,6 +228,16 @@ WRITE_PATTERNS = [
     r"\bmeeting\s+prep\b",
     r"\bteams\s+message\b",
     r"\bdraft\s+this\b",
+    r"\bsummar(ize|y)\b",
+    r"\brecap\b",
+    r"\bwrap.?up\b",
+    r"\bconsolidate\b",
+    r"\bpull\s+(it|this|everything)\s+together\b",
+    r"\bcompile\b",
+    r"\bfinaliz(e|ing)\b",
+    r"\bitin(e|i)?rar(y|ie)\b",
+    r"\bput\s+(it|this)\s+together\b",
+    r"\bcreate\s+(the\s+)?(final|full)\b",
 ]
 
 RESEARCH_PATTERNS = [
@@ -313,7 +323,7 @@ class Orchestrator:
         try:
             agent = Agent(
                 name="DocumentSummarizer",
-                model=get_agno_model(max_tokens=1200),
+                model=get_agno_model(max_tokens=3000),
                 instructions=(
                     "You are a document summarizer for a TPM working session. "
                     "Produce a structured summary that captures ALL key facts, "
@@ -548,7 +558,7 @@ class Orchestrator:
         try:
             agent = Agent(
                 name="DocumentQA",
-                model=get_agno_model(max_tokens=1500),
+                model=get_agno_model(max_tokens=3000),
                 instructions=DOCUMENT_QA_SYSTEM,
                 markdown=True,
                 add_datetime_to_context=False,
@@ -599,11 +609,14 @@ class Orchestrator:
         active_agents: Optional[list],
         workroom: Optional[WorkroomSession] = None,
         frustration_detected: bool = False,
+        research_context: str = "",
     ) -> dict:
         """Dispatch to a built-in or custom agent by its key string.
         
         When workroom is set, agents use conversational mode (concise responses)
         and receive full conversation history for multi-turn follow-ups.
+        If research_context is provided (from agent chaining), it is appended
+        to the doc_block so the agent sees grounded facts from Researcher.
         """
         if not self._agent_allowed(key, active_agents):
             return self._agent_blocked(key.capitalize(), active_agents)
@@ -612,6 +625,10 @@ class Orchestrator:
 
         # Build document context block (summary) for agent injection
         doc_block = self._get_doc_context_block(document_context) if is_workroom else ""
+
+        # Append research context from agent chaining (if any)
+        if research_context:
+            doc_block += research_context
 
         # Team-awareness: tell each agent who else is in the room
         if is_workroom and active_agents and len(active_agents) > 1:
@@ -658,6 +675,7 @@ class Orchestrator:
         active_agents: Optional[list],
         workroom: Optional[WorkroomSession] = None,
         frustration_detected: bool = False,
+        research_context: str = "",
     ) -> tuple[str, Generator[str, None, None]] | None:
         """Streaming variant of _route_by_key(). Returns (agent_label, generator) or None."""
         if not self._agent_allowed(key, active_agents):
@@ -667,6 +685,10 @@ class Orchestrator:
 
         # Build document context block (summary) for agent injection
         doc_block = self._get_doc_context_block(document_context) if is_workroom else ""
+
+        # Append research context from agent chaining (if any)
+        if research_context:
+            doc_block += research_context
 
         # Team-awareness
         if is_workroom and active_agents and len(active_agents) > 1:
@@ -713,10 +735,24 @@ class Orchestrator:
         "Given a user message and the list of available agents, pick the 1-2 agents "
         "best suited to answer. Only pick 2 if the question clearly spans two distinct "
         "areas of expertise. Prefer fewer agents.\n\n"
+        "SUMMARIZATION / SYNTHESIS RULE: When the user asks to summarize, recap, "
+        "consolidate, compile, wrap up, or create an itinerary/timeline from the "
+        "conversation, route to the 'writer' agent ONLY. The Writer is responsible "
+        "for synthesizing the full chat history into a polished output. Do NOT send "
+        "summarize requests to all agents.\n\n"
+        "RESEARCH CHAINING: Decide whether the user's question needs real-world facts "
+        "that agents wouldn't know from memory (e.g. specific restaurants, hotels, "
+        "prices, directions, event listings, current news). If yes, set needs_research "
+        "to true — a background research step will gather facts before the chosen "
+        "expert(s) respond. When needs_research is true, pick the DOMAIN EXPERT(s) "
+        "who should synthesize the answer — do NOT pick 'researcher' as a visible agent "
+        "because research will happen automatically behind the scenes.\n\n"
         "If the user is asking a broad question like 'what does everyone think' or "
-        "'discuss this', return ALL agents.\n\n"
-        "Respond ONLY with a JSON array of agent keys, e.g. [\"analyst\", \"challenger\"]. "
-        "No explanation, no markdown, just the JSON array."
+        "'discuss this', return ALL agents with needs_research false.\n\n"
+        "Respond ONLY with JSON (no explanation, no markdown):\n"
+        '{\"agents\": [\"agent_key1\", \"agent_key2\"], \"needs_research\": true}\n'
+        "or:\n"
+        '{\"agents\": [\"agent_key1\"], \"needs_research\": false}'
     )
 
     _OPEN_ENDED_PATTERNS = [
@@ -729,10 +765,87 @@ class Orchestrator:
     def _is_open_ended(self, message: str) -> bool:
         """Detect broad/open-ended messages that should go to ALL agents."""
         msg_lower = message.lower().strip()
+        # If there's a clear intent (write/challenge/research), it's NOT open-ended
+        if _detect_intent(message) != "ambiguous":
+            return False
         # Short messages without a clear @mention are likely open-ended
         if len(msg_lower.split()) <= 6 and "@" not in msg_lower and "?" not in msg_lower:
             return True
         return any(p in msg_lower for p in self._OPEN_ENDED_PATTERNS)
+
+    # ------------------------------------------------------------------ #
+    # Research-first chaining — silent Researcher as data layer          #
+    # ------------------------------------------------------------------ #
+
+    _RESEARCH_PHASE_INSTRUCTION = (
+        "You are a research assistant gathering factual data for a domain expert. "
+        "Search the web for specific, current, real-world information relevant to "
+        "the user's question. Focus on:\n"
+        "- Real names of places, businesses, venues\n"
+        "- Prices, hours, availability, contact details\n"
+        "- Current ratings, reviews, or recent changes\n"
+        "- Practical logistics (directions, parking, policies)\n\n"
+        "Return a structured factual brief — bullet points with source attribution. "
+        "Do NOT provide opinions, recommendations, or commentary. Just the facts. "
+        "A domain expert will use your research to craft the final answer."
+    )
+
+    def _run_research_phase(
+        self,
+        message: str,
+        conversation_history: Optional[list] = None,
+        document_context: Optional[dict] = None,
+    ) -> str:
+        """Run Researcher silently to gather real-world facts.
+
+        Returns a factual brief string to be injected into expert prompts.
+        On failure, returns empty string (experts fall back to LLM knowledge).
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        # Get the Researcher agent definition (must exist in custom_agents)
+        runner = self._get_custom_runner("researcher")
+        if not runner:
+            logger.warning("Agent chaining: 'researcher' agent not found, skipping research phase")
+            return ""
+
+        # Build a research-focused prompt
+        # Include recent conversation for context
+        recent_context = ""
+        if conversation_history:
+            for m in conversation_history[-4:]:
+                role = m.get("role", "user")
+                content = m.get("content", "")[:200]
+                recent_context += f"{role}: {content}\n"
+
+        research_prompt = (
+            f"Gather factual, real-world data for this question:\n\n"
+            f"User question: {message}\n"
+        )
+        if recent_context:
+            research_prompt = (
+                f"Conversation context:\n{recent_context}\n\n" + research_prompt
+            )
+
+        # Build doc_context if document is uploaded
+        doc_block = self._get_doc_context_block(document_context) if document_context else ""
+
+        try:
+            result = runner.respond(
+                research_prompt,
+                conversation_history,
+                document_context,
+                concise=True,
+                doc_context=doc_block + "\n\n" + self._RESEARCH_PHASE_INSTRUCTION if doc_block else self._RESEARCH_PHASE_INSTRUCTION,
+            )
+            if result and len(result.strip()) > 20:
+                logger.info("Agent chaining: research phase returned %d chars", len(result))
+                return result.strip()
+            return ""
+        except Exception as exc:
+            logger.warning("Agent chaining: research phase failed: %s", exc)
+            return ""
 
     def smart_route(
         self,
@@ -747,8 +860,14 @@ class Orchestrator:
         Falls back to round_table if the LLM picks all agents or on error.
         For open-ended messages, skips LLM and goes directly to round_table
         to respect the user's curated team.
+
+        Agent chaining: when the router determines that real-world facts are
+        needed (needs_research=true), Researcher runs first behind the scenes
+        and its output is injected into the selected expert(s) as context.
         """
         import json as _json
+        import logging
+        logger = logging.getLogger(__name__)
 
         # Detect frustration early — propagate to all downstream agents
         frustrated = _detect_frustration(message, conversation_history)
@@ -782,24 +901,35 @@ class Orchestrator:
             f"Available agents:\n{agent_desc_text}\n\n"
             f"Recent conversation:\n{recent}\n"
             f"User message: {message}\n\n"
-            f"Which agent(s) should respond? Return JSON array of keys."
+            "Which agent(s) should respond and does this need real-world research? "
+            "Return JSON: {\"agents\": [...], \"needs_research\": true/false}"
         )
 
+        needs_research = False
         try:
             router = Agent(
                 name="SmartRouter",
-                model=get_agno_model(max_tokens=100),
+                model=get_agno_model(max_tokens=1500),
                 instructions=self.SMART_ROUTE_SYSTEM,
                 markdown=False,
                 add_datetime_to_context=False,
             )
             result = router.run(input=user_prompt)
             raw = result.content.strip() if isinstance(result.content, str) else str(result.content).strip()
-            # Parse JSON array from response
             # Handle possible markdown wrapping
             if raw.startswith("```"):
                 raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-            selected = _json.loads(raw)
+            parsed = _json.loads(raw)
+
+            # Support both new structured format and legacy array format
+            if isinstance(parsed, dict):
+                selected = parsed.get("agents", [])
+                needs_research = bool(parsed.get("needs_research", False))
+            elif isinstance(parsed, list):
+                # Legacy format — plain array, no research chaining
+                selected = parsed
+            else:
+                selected = active_agents
 
             # Validate: must be a list of strings that are in active_agents
             if not isinstance(selected, list):
@@ -811,8 +941,25 @@ class Orchestrator:
             # On any error, fall back to round table
             selected = active_agents
 
-        # If LLM selected all or most agents, just round table
-        if len(selected) >= len(active_agents) or len(selected) > 2:
+        # ---- Agent chaining: research-first pipeline ----
+        research_context = ""
+        if needs_research:
+            logger.info("Agent chaining: research phase triggered for %d expert(s): %s", len(selected), selected)
+            research_context = self._run_research_phase(
+                message, conversation_history, document_context,
+            )
+            if research_context:
+                research_context = (
+                    "\n\n🔍 **Research Context** (gathered from web search — use these facts "
+                    "to ground your response with real names, prices, and details):\n"
+                    f"{research_context}\n\n"
+                    "GROUNDING RULE: Use the research data above as your primary source of "
+                    "facts. Cite specific names, prices, and details from it. Do NOT invent "
+                    "places or details not found in the research."
+                )
+
+        # If LLM selected ALL agents, round table with all
+        if len(selected) >= len(active_agents):
             return self.round_table(
                 message,
                 active_agents=active_agents,
@@ -820,6 +967,7 @@ class Orchestrator:
                 document_context=document_context,
                 workroom=workroom,
                 frustration_detected=frustrated,
+                research_context=research_context,
             )
 
         # Single agent — direct route
@@ -828,9 +976,10 @@ class Orchestrator:
                 selected[0], message, conversation_history,
                 document_context, active_agents, workroom=workroom,
                 frustration_detected=frustrated,
+                research_context=research_context,
             )
 
-        # Two agents — mini round table with just those two
+        # Multiple agents (2-3) — mini round table with just those agents
         return self.round_table(
             message,
             active_agents=selected,
@@ -838,10 +987,15 @@ class Orchestrator:
             document_context=document_context,
             workroom=workroom,
             frustration_detected=frustrated,
+            research_context=research_context,
         )
 
     def _build_agent_descriptions(self, active_agents: list) -> list[dict]:
-        """Build a list of {key, description} dicts for active agents."""
+        """Build a list of {key, description} dicts for active agents.
+
+        Appends tool/skill info so the smart router knows which agents
+        can access external data (e.g. web_search).
+        """
         # Built-in descriptions
         BUILTIN_DESC = {
             "facilitator": "Facilitates discussion, summarises progress",
@@ -855,6 +1009,8 @@ class Orchestrator:
                 runner = self._get_custom_runner(key)
                 if runner:
                     desc = runner.agent_def.description or f"Custom agent: {runner.agent_def.label}"
+                    if runner.agent_def.skill_names:
+                        desc += f" | tools: {', '.join(runner.agent_def.skill_names)}"
                     result.append({"key": key, "description": desc})
                 else:
                     result.append({"key": key, "description": f"Agent: {key}"})
@@ -873,9 +1029,13 @@ class Orchestrator:
         Returns a list of (agent_label, generator) tuples — one per selected agent.
         Each generator yields text chunks for streaming. Agents are meant to be
         streamed sequentially in the UI.
+        Supports agent chaining: when needs_research=true, runs Researcher first
+        then passes results into expert agents.
         Returns None only on routing error.
         """
         import json as _json
+        import logging
+        logger = logging.getLogger(__name__)
 
         # Detect frustration for streaming path
         frustrated = _detect_frustration(message, conversation_history)
@@ -909,13 +1069,15 @@ class Orchestrator:
             f"Available agents:\n{agent_desc_text}\n\n"
             f"Recent conversation:\n{recent}\n"
             f"User message: {message}\n\n"
-            f"Which agent(s) should respond? Return JSON array of keys."
+            "Which agent(s) should respond and does this need real-world research? "
+            "Return JSON: {\"agents\": [...], \"needs_research\": true/false}"
         )
 
+        needs_research = False
         try:
             router = Agent(
                 name="SmartRouter",
-                model=get_agno_model(max_tokens=100),
+                model=get_agno_model(max_tokens=1500),
                 instructions=self.SMART_ROUTE_SYSTEM,
                 markdown=False,
                 add_datetime_to_context=False,
@@ -924,7 +1086,16 @@ class Orchestrator:
             raw = result.content.strip() if isinstance(result.content, str) else str(result.content).strip()
             if raw.startswith("```"):
                 raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-            selected = _json.loads(raw)
+            parsed = _json.loads(raw)
+
+            # Support both new structured format and legacy array format
+            if isinstance(parsed, dict):
+                selected = parsed.get("agents", [])
+                needs_research = bool(parsed.get("needs_research", False))
+            elif isinstance(parsed, list):
+                selected = parsed
+            else:
+                return None
 
             if not isinstance(selected, list):
                 return None
@@ -934,6 +1105,23 @@ class Orchestrator:
         except Exception:
             return None
 
+        # ---- Agent chaining: research-first pipeline ----
+        research_context = ""
+        if needs_research:
+            logger.info("Agent chaining (stream): research phase triggered for %d expert(s): %s", len(selected), selected)
+            research_context = self._run_research_phase(
+                message, conversation_history, document_context,
+            )
+            if research_context:
+                research_context = (
+                    "\n\n🔍 **Research Context** (gathered from web search — use these facts "
+                    "to ground your response with real names, prices, and details):\n"
+                    f"{research_context}\n\n"
+                    "GROUNDING RULE: Use the research data above as your primary source of "
+                    "facts. Cite specific names, prices, and details from it. Do NOT invent "
+                    "places or details not found in the research."
+                )
+
         # Stream all selected agents (1 or more)
         streams = []
         for key in selected:
@@ -941,6 +1129,7 @@ class Orchestrator:
                 key, message, conversation_history,
                 document_context, active_agents, workroom=workroom,
                 frustration_detected=frustrated,
+                research_context=research_context,
             )
             if result:
                 streams.append(result)
@@ -958,11 +1147,14 @@ class Orchestrator:
         document_context: Optional[dict] = None,
         workroom: Optional[WorkroomSession] = None,
         frustration_detected: bool = False,
+        research_context: str = "",
     ) -> dict:
         """
         Ask every active agent to respond to the same message in parallel.
 
         All agents receive shared conversation history and document context.
+        If research_context is provided (from agent chaining), it is passed
+        through to each agent so they see grounded facts from Researcher.
         Responses are collected via ThreadPoolExecutor for lower latency.
         When multiple agents respond, a deduplication pass removes redundant
         content so each agent adds distinct value.
@@ -999,6 +1191,7 @@ class Orchestrator:
                     key, message, list(conversation_history or []),
                     document_context, active_agents, workroom=workroom,
                     frustration_detected=frustration_detected,
+                    research_context=research_context,
                 )
                 return {
                     "key": key,
@@ -1014,6 +1207,7 @@ class Orchestrator:
                         key, message, list(conversation_history or []),
                         document_context, active_agents, workroom=workroom,
                         frustration_detected=frustration_detected,
+                        research_context=research_context,
                     )
                     return {
                         "key": key,

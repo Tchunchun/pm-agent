@@ -62,10 +62,41 @@ _FOCUSED_CONSTRAINT = (
 )
 
 
+def _build_toolkit_factories() -> dict:
+    """Lazy-loaded factory dict for Agno Toolkit instances.
+
+    Each entry maps a skill name to a callable that returns a Toolkit.
+    Toolkits are instantiated per-agent (not shared) so state stays isolated.
+    Adding a future integration = one new entry here + pip install.
+    """
+    factories: dict = {}
+
+    # -- Web Search (DuckDuckGo meta-search, no API key needed) ----------
+    try:
+        from agno.tools.websearch import WebSearchTools
+        factories["web_search"] = lambda: WebSearchTools(cache_results=True)
+    except ImportError:
+        logger.info("WebSearchTools not available (install ddgs)")
+
+    return factories
+
+
+# Built once at module load; toolkit instances are created per-agent call.
+_TOOLKIT_FACTORIES = _build_toolkit_factories()
+
+
 def _resolve_tools(skill_names: list[str] | None) -> list:
-    """Map skill_names from the CustomAgent definition to Agno tool functions."""
+    """Map skill_names from the CustomAgent definition to Agno tool functions.
+
+    Supports two kinds of entries in skill_names:
+    - Plain function names ("get_current_date", "search_backlog", ...)
+    - Toolkit names ("web_search", "google_maps", ...)
+    Agno Agent(tools=[...]) accepts both plain functions and Toolkit objects.
+    """
     if not skill_names:
         return []
+
+    # --- plain function tools ---
     try:
         from skills.tools import get_current_date, search_backlog, get_recent_insights
     except ImportError:
@@ -77,9 +108,21 @@ def _resolve_tools(skill_names: list[str] | None) -> list:
         "search_backlog": search_backlog,
         "get_recent_insights": get_recent_insights,
     }
-    tools = [name_to_func[n] for n in skill_names if n in name_to_func]
-    if len(tools) < len(skill_names):
-        missing = [n for n in skill_names if n not in name_to_func]
+
+    tools: list = []
+    missing: list[str] = []
+
+    for name in skill_names:
+        if name in name_to_func:
+            tools.append(name_to_func[name])
+        elif name in _TOOLKIT_FACTORIES:
+            toolkit = _TOOLKIT_FACTORIES[name]()
+            if toolkit is not None:
+                tools.append(toolkit)
+        else:
+            missing.append(name)
+
+    if missing:
         logger.warning("CustomAgentRunner: unknown skills ignored: %s", missing)
     return tools
 

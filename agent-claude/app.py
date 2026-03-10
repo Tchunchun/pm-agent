@@ -238,7 +238,7 @@ Return ONLY valid JSON, no markdown fences:
     try:
         agent = Agent(
             name="MeetingContextParser",
-            model=get_agno_model(max_tokens=400),
+            model=get_agno_model(max_tokens=800),
             instructions="You extract structured meeting metadata from freeform text. Return only JSON.",
             markdown=False,
         )
@@ -1141,6 +1141,7 @@ if page == "chat":
 
                     else:
                         # Open mode: stream all selected agents sequentially
+                        _route_t0 = time.time()  # Start timing from routing (includes research phase)
                         stream_results = orchestrator.smart_route_stream(
                             _pending,
                             active_agents=active_ws.active_agents,
@@ -1148,6 +1149,7 @@ if page == "chat":
                             document_context=st.session_state.workroom_active_document,
                             workroom=active_ws,
                         )
+                        _route_overhead = round(time.time() - _route_t0, 2)  # Routing + research time
                         if stream_results:
                             from agents.orchestrator import _is_decision
                             from models.workroom import Decision as WRDecision
@@ -1158,7 +1160,9 @@ if page == "chat":
                                     _render_agent_header(agent_label)
                                     full_text = st.write_stream(gen)
                                 _open_elapsed = round(time.time() - _open_t0, 2)
-                                multi_response.append({"agent": agent_label, "text": full_text or "", "elapsed_sec": _open_elapsed})
+                                # Total = routing/research overhead (split across agents) + streaming
+                                _total_elapsed = round(_open_elapsed + _route_overhead / len(stream_results), 2)
+                                multi_response.append({"agent": agent_label, "text": full_text or "", "elapsed_sec": _total_elapsed})
                                 if _is_decision(full_text or ""):
                                     storage.add_workroom_decision(
                                         active_ws.id,
@@ -1182,6 +1186,7 @@ if page == "chat":
                                 })
                         else:
                             # Routing error → batch fallback
+                            # _route_overhead from the failed smart_route_stream is included
                             _batch_t0 = time.time()
                             with st.spinner("Thinking…"):
                                 result = orchestrator.handle_message(
@@ -1194,7 +1199,7 @@ if page == "chat":
                                     active_agents=active_ws.active_agents,
                                     workroom=active_ws,
                                 )
-                                _batch_elapsed = round(time.time() - _batch_t0, 2)
+                                _batch_elapsed = round(time.time() - _batch_t0 + _route_overhead, 2)
                                 from agents.orchestrator import _is_decision
                                 from models.workroom import Decision as WRDecision
                                 if _is_decision(result.get("text", "")):

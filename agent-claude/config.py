@@ -55,6 +55,8 @@ GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 APP_URL              = os.environ.get("APP_URL", "http://localhost:8501")
 
 
+
+
 def has_valid_credentials() -> bool:
     """Return True if enough credentials are set to create an LLM client."""
     if AZURE_OPENAI_ENDPOINT and (AZURE_OPENAI_KEY or OPENAI_API_KEY):
